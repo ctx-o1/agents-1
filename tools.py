@@ -2,6 +2,8 @@ import json
 import os
 from pathlib import Path
 
+from storage import Session, memory, scratchpad, session_search
+
 WORKSPACE = (Path(__file__).resolve().parent / "workspace").resolve()
 MAX_TOOL_OUTPUT = 20_000
 MAX_SEARCH_FILE_SIZE = 1_000_000
@@ -124,6 +126,9 @@ FUNCTIONS = {
     "edit_file": edit_file,
     "search_files": search_files,
     "find_files": find_files,
+    "session_search": session_search,
+    "memory": memory,
+    "scratchpad": scratchpad,
 }
 
 TOOLS = [
@@ -228,10 +233,75 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "session_search",
+            "description": (
+                "Search saved user, assistant, and tool messages for a case-insensitive "
+                "literal query. Searches the 100 most recently updated sessions, or one "
+                "session_id. Returns at most 20 excerpts with source IDs and message indexes."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "session_id": {"type": "string"},
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "memory",
+            "description": (
+                "Read or curate durable memory shared across this project's sessions. "
+                "target='agent' holds verified project/environment facts (2200 characters); "
+                "target='user' holds stated preferences (1375 characters). Add content, "
+                "or update/remove an exact entry_id returned by read. Keep one fact per "
+                "entry. Updates replace the entry's entire content. A full store rejects writes."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["read", "add", "update", "remove"]},
+                    "target": {"type": "string", "enum": ["agent", "user"]},
+                    "content": {"type": "string"},
+                    "entry_id": {"type": "string"},
+                },
+                "required": ["action", "target"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "scratchpad",
+            "description": (
+                "Read, write, or clear the active session's working notes (4000 characters). "
+                "Write replaces the complete scratchpad. Record task goals, constraints, "
+                "verified findings, progress, and next steps. It is saved with the session "
+                "and included in the next model request. Use memory for durable facts."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["read", "write", "clear"]},
+                    "content": {"type": "string"},
+                },
+                "required": ["action"],
+                "additionalProperties": False,
+            },
+        },
+    },
 ]
 
 
-def execute_tool(name: str, arguments_json: str) -> str:
+def execute_tool(name: str, arguments_json: str, *, session: Session | None = None) -> str:
     try:
         if name not in FUNCTIONS:
             raise ValueError(f"Unknown tool: {name}")
@@ -241,8 +311,16 @@ def execute_tool(name: str, arguments_json: str) -> str:
             raise ValueError("Tool arguments must be an object.")
         if not all(isinstance(value, str) for value in arguments.values()):
             raise ValueError("Tool arguments must be strings.")
+        schema = next(tool["function"]["parameters"] for tool in TOOLS if tool["function"]["name"] == name)
+        if arguments.keys() - schema["properties"].keys():
+            raise ValueError("Unexpected tool arguments.")
+        if set(schema.get("required", [])) - arguments.keys():
+            raise ValueError("Missing required tool arguments.")
 
-        result = FUNCTIONS[name](**arguments)
+        if name in {"memory", "scratchpad"}:
+            result = FUNCTIONS[name](**arguments, session=session)
+        else:
+            result = FUNCTIONS[name](**arguments)
         return json.dumps({"result": result}, ensure_ascii=False)
     except (ValueError, TypeError, OSError) as error:
         return json.dumps({"error": str(error)})
