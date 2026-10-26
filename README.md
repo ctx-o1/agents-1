@@ -2,6 +2,10 @@
 
 `agent(-1)` is a new gen experimental agent that can take a step back*
 
+*more to come...* 
+*stay tuned for updates...*
+
+
 ## Run
 
 Requires Python 3.14+ and [uv](https://docs.astral.sh/uv/getting-started/installation/).
@@ -9,23 +13,19 @@ From this project folder, using PowerShell:
 
 ```powershell
 uv sync
-# On a fresh checkout, create .env once:
-Copy-Item .env.example .env
 ```
 
-Add your OpenRouter key to `.env`:
+Create `.env` & add your keys to `.env`
 
 ```dotenv
 OPENROUTER_API_KEY=your-openrouter-key
 OPENROUTER_MODEL=deepseek/deepseek-v4.1-flash-1017
 ```
 
-Run the chat loop or a single task:
+Run the chat loop:
 
 ```powershell
 uv run chat.py
-# Or:
-uv run agent.py
 ```
 
 Both entry points load the project's `.env` automatically. Existing environment
@@ -33,9 +33,14 @@ variables take precedence. `.env`.
 
 
 
-
 Each user message runs the agent loop with the shared conversation history, including previous assistant and tool messages. History is saved automatically. `agent.py` runs one task,
 saves its session, and exits.
+
+Currently supports:  
+
+Persistent & Agent searchable Session History   
+Persistent Agent Memory  
+Agent Scratchpad  
 
 ## Sessions, memory, and scratchpad
 

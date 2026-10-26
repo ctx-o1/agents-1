@@ -6,7 +6,7 @@ import json
 import socket
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -72,6 +72,9 @@ class AgentTests(unittest.TestCase):
         output = redirect_stdout(io.StringIO())
         output.__enter__()
         self.addCleanup(output.__exit__, None, None, None)
+        errors = redirect_stderr(io.StringIO())
+        errors.__enter__()
+        self.addCleanup(errors.__exit__, None, None, None)
 
     def test_round_trip_preserves_tools_and_follow_up_context(self):
         session = storage.new_session()

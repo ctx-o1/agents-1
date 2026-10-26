@@ -1,12 +1,16 @@
 # Run with: uv run agent.py
 
+import argparse
 import json
 import os
+import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import APIError, OpenAI
 
+from cli import Terminal
 from storage import Session, close_pending_tools, new_session, save_session
 from tools import TOOLS, WORKSPACE, execute_tool
 
@@ -109,7 +113,13 @@ def model_messages(session: Session) -> list[dict]:
     ]
 
 
-def run_agent(client: OpenAI, task: str, session: Session | None = None) -> str:
+def run_agent(
+    client: OpenAI,
+    task: str,
+    session: Session | None = None,
+    *,
+    on_tool: Callable[[int, str, str, str], None] | None = None,
+) -> str:
     """Complete one user task and checkpoint the session around tool execution."""
     if session is None:
         session = new_session()
@@ -155,7 +165,6 @@ def run_agent(client: OpenAI, task: str, session: Session | None = None) -> str:
                 return message.content or "The model returned an empty response."
 
             for call in message.tool_calls:
-                print(f"[{round_number}] {call.function.name}")
                 result = execute_tool(
                     call.function.name,
                     call.function.arguments,
@@ -165,7 +174,8 @@ def run_agent(client: OpenAI, task: str, session: Session | None = None) -> str:
                     "role": "tool", "tool_call_id": call.id, "content": result,
                 })
                 save_session(session)
-                print(result[:500])
+                if on_tool is not None:
+                    on_tool(round_number, call.function.name, call.function.arguments, result)
 
         answer = "Stopped: reached the maximum number of model rounds."
         messages.append({"role": "assistant", "content": answer})
@@ -175,26 +185,44 @@ def run_agent(client: OpenAI, task: str, session: Session | None = None) -> str:
         save_session(session)
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Run one task with agent(-1).")
+    parser.add_argument("--plain", action="store_true", help="Disable terminal colors")
+    parser.add_argument("--verbose", action="store_true", help="Show bounded tool-result details")
+    arguments = parser.parse_args(argv)
+    terminal = Terminal(color=False if arguments.plain else None)
+    activity = Terminal(stream=sys.stderr, color=False if arguments.plain else None)
     load_dotenv(PROJECT_ROOT / ".env")
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
         raise SystemExit("Set OPENROUTER_API_KEY in .env or your environment.")
 
-    WORKSPACE.mkdir(parents=True, exist_ok=True)
-    task = input("Task: ").strip()
-    if not task:
-        return
-    session = new_session()
-    print(f"Session: {session.id}")
-
-    with OpenAI(
-        api_key=api_key,
-        base_url="https://openrouter.ai/api/v1",
-        timeout=60.0,
-        max_retries=2,
-    ) as client:
-        print("\n" + run_agent(client, task, session))
+    try:
+        WORKSPACE.mkdir(parents=True, exist_ok=True)
+        session = new_session()
+        activity.header(session.id, os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-v4.1-flash-1017"))
+        task = input(terminal.prompt()).strip()
+        if not task:
+            return
+        with OpenAI(
+            api_key=api_key,
+            base_url="https://openrouter.ai/api/v1",
+            timeout=60.0,
+            max_retries=2,
+        ) as client:
+            activity.status("Working...")
+            answer = run_agent(
+                client, task, session,
+                on_tool=lambda round_number, name, tool_arguments, result: activity.tool(
+                    round_number, name, tool_arguments, result, verbose=arguments.verbose,
+                ),
+            )
+            terminal.answer(answer)
+    except (EOFError, KeyboardInterrupt):
+        activity.info("Task interrupted.")
+    except (APIError, OSError, ValueError) as error:
+        activity.error(str(error))
+        raise SystemExit(1) from error
 
 
 if __name__ == "__main__":
