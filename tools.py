@@ -1,8 +1,10 @@
 import json
+import os
 from pathlib import Path
 
 WORKSPACE = (Path(__file__).resolve().parent / "workspace").resolve()
 MAX_TOOL_OUTPUT = 20_000
+MAX_SEARCH_FILE_SIZE = 1_000_000
 
 
 def workspace_path(path: str) -> Path:
@@ -38,10 +40,90 @@ def write_file(path: str, content: str) -> str:
     return f"Wrote {len(content)} characters to {path}."
 
 
+def edit_file(path: str, old_text: str, new_text: str) -> str:
+    if not old_text:
+        raise ValueError("old_text must not be empty.")
+    target = workspace_path(path)
+    with target.open(encoding="utf-8") as file:
+        content = file.read(MAX_TOOL_OUTPUT + 1)
+    if len(content) > MAX_TOOL_OUTPUT:
+        raise ValueError("File is too large for edit_file.")
+    count = content.count(old_text)
+    if count != 1:
+        raise ValueError(f"Expected exactly one occurrence of old_text; found {count}.")
+    updated = content.replace(old_text, new_text, 1)
+    return write_file(path, updated)
+
+
+def _workspace_files(path: str):
+    directory = workspace_path(path)
+    if not directory.is_dir():
+        raise ValueError("path must name an existing workspace directory.")
+    for root, directories, files in os.walk(directory, followlinks=False):
+        # Do not traverse directory links, including Windows junctions.
+        directories[:] = sorted(
+            name for name in directories
+            if not (Path(root) / name).is_symlink()
+            and not (Path(root) / name).is_junction()
+        )
+        for name in sorted(files):
+            candidate = Path(root) / name
+            if candidate.resolve().is_relative_to(WORKSPACE) and candidate.is_file():
+                yield candidate
+
+
+def _format_results(results) -> str:
+    lines = []
+    size = 0
+    for line in results:
+        if len(lines) >= 200 or size + len(line) + 1 > MAX_TOOL_OUTPUT:
+            return "\n".join(lines) + "\n[Results truncated; narrow your search]"
+        lines.append(line)
+        size += len(line) + 1
+    return "\n".join(lines) or "(no matches)"
+
+
+def search_files(pattern: str, path: str = ".") -> str:
+    if not pattern:
+        raise ValueError("pattern must not be empty.")
+
+    def matches():
+        for candidate in _workspace_files(path):
+            try:
+                if candidate.stat().st_size > MAX_SEARCH_FILE_SIZE:
+                    continue
+                with candidate.open(encoding="utf-8") as file:
+                    content = file.read(MAX_SEARCH_FILE_SIZE + 1)
+            except (OSError, UnicodeError):
+                continue
+            if len(content) > MAX_SEARCH_FILE_SIZE or "\x00" in content:
+                continue
+            for number, line in enumerate(content.splitlines(), 1):
+                if pattern in line:
+                    relative = candidate.relative_to(WORKSPACE).as_posix()
+                    yield f"{relative}:{number}: {line[:500]}"
+
+    return _format_results(matches())
+
+
+def find_files(glob: str, path: str = ".") -> str:
+    if not glob or Path(glob).anchor or ".." in Path(glob).parts:
+        raise ValueError("glob must be a non-empty relative pattern without '..'.")
+    directory = workspace_path(path)
+    return _format_results(
+        candidate.relative_to(WORKSPACE).as_posix()
+        for candidate in _workspace_files(path)
+        if candidate.relative_to(directory).full_match(glob)
+    )
+
+
 FUNCTIONS = {
     "list_files": list_files,
     "read_file": read_file,
     "write_file": write_file,
+    "edit_file": edit_file,
+    "search_files": search_files,
+    "find_files": find_files,
 }
 
 TOOLS = [
@@ -82,6 +164,66 @@ TOOLS = [
                     "content": {"type": "string"},
                 },
                 "required": ["path", "content"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_file",
+            "description": (
+                "Replace exactly one occurrence of old_text in a UTF-8 workspace file. "
+                "Fails if the text is missing, ambiguous, or the file exceeds 20,000 characters."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "old_text": {"type": "string"},
+                    "new_text": {"type": "string"},
+                },
+                "required": ["path", "old_text", "new_text"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_files",
+            "description": (
+                "Recursively search workspace UTF-8 files for a case-sensitive literal string. "
+                "Returns workspace paths, line numbers, and line previews. Skips binary, "
+                "unreadable, and files larger than 1 MB. Returns at most 200 matches."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {"type": "string"},
+                    "path": {"type": "string"},
+                },
+                "required": ["pattern"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_files",
+            "description": (
+                "Find workspace files matching a glob relative to path (default '.'). "
+                "Use '**/*.py' for recursive matching or '*.py' for immediate files. "
+                "Returns at most 200 workspace-relative paths."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "glob": {"type": "string"},
+                    "path": {"type": "string"},
+                },
+                "required": ["glob"],
                 "additionalProperties": False,
             },
         },
