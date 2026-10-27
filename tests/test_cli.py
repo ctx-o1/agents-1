@@ -10,6 +10,8 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from wcwidth import iter_graphemes, wcswidth
+
 from src import agent, chat, storage
 from src.cli import Terminal
 from tests.test_agent import FakeClient, reply
@@ -102,6 +104,75 @@ class TerminalTests(unittest.TestCase):
         Terminal(stream).status("Working...")
         self.assertEqual(stream.getvalue(), "")
 
+    def test_reasoning_flushes_fragments_wraps_and_resets_between_rounds(self):
+        stream = io.StringIO()
+        terminal = Terminal(stream, color=False)
+        terminal.width = 40
+        terminal.reasoning(1, "First ")
+        self.assertIn("  | First", stream.getvalue())
+        terminal.reasoning(1, "step.\n" + "x" * 80)
+        terminal.end_reasoning()
+        terminal.reasoning(2, "Next step.")
+        terminal.end_reasoning()
+        output = stream.getvalue()
+        self.assertEqual(output.count("Reasoning / round 1"), 1)
+        self.assertIn("Reasoning / round 2\n  | Next step.\n", output)
+        self.assertTrue(all(len(line) <= 40 for line in output.splitlines()))
+        self.assertNotIn("\x1b", output)
+
+    def test_reasoning_sanitizes_escape_sequences_split_across_chunks(self):
+        stream = io.StringIO()
+        terminal = Terminal(stream, color=False)
+        for part in ("Visible\x1b", "[2", "J text\x1b]0;", "hostile title\x1b", "\\\nNext\r\b\tline"):
+            terminal.reasoning(1, part)
+        terminal.end_reasoning()
+        terminal.reasoning(2, "Safe")
+        terminal.end_reasoning()
+        output = stream.getvalue()
+        self.assertIn("Visible text", output)
+        self.assertIn("Next line", output)
+        self.assertIn("Safe", output)
+        self.assertNotIn("hostile title", output)
+        self.assertNotIn("[2J", output)
+        for control in ("\x1b", "\b", "\r", "\x07"):
+            self.assertNotIn(control, output)
+
+    def test_empty_reasoning_never_opens_a_panel(self):
+        stream = io.StringIO()
+        Terminal(stream).end_reasoning()
+        self.assertEqual(stream.getvalue(), "")
+
+    def test_unicode_reasoning_wraps_by_cells_without_splitting_graphemes(self):
+        for cluster in ("你", "😀", "e\u0301", "👩\u200d💻", "❤️", "1️⃣", "🇮🇳"):
+            for fragment_size in (1, 7, 1000):
+                with self.subTest(cluster=cluster, fragment_size=fragment_size):
+                    stream = io.StringIO()
+                    terminal = Terminal(stream, color=False)
+                    terminal.width = 40
+                    text = "x" * 35 + cluster * 40
+                    for start in range(0, len(text), fragment_size):
+                        terminal.reasoning(1, text[start:start + fragment_size])
+                    terminal.end_reasoning()
+                    lines = [line for line in stream.getvalue().splitlines() if line.startswith("  | ")]
+                    self.assertTrue(all(wcswidth(line) <= 40 for line in lines))
+                    self.assertEqual("".join(line[4:] for line in lines), text)
+                    # Segmentation must be unchanged by chunk boundaries or wrapping.
+                    self.assertEqual([g for line in lines for g in iter_graphemes(line[4:])],
+                                     list(iter_graphemes(text)))
+                    if wcswidth(cluster) == 2:
+                        self.assertEqual(lines[0], "  | " + "x" * 35)
+
+    def test_end_reasoning_flushes_the_last_grapheme_before_the_next_round(self):
+        stream = io.StringIO()
+        terminal = Terminal(stream, color=False)
+        terminal.reasoning(1, "e")
+        terminal.reasoning(1, "\u0301")
+        terminal.end_reasoning()
+        terminal.reasoning(2, "Z")
+        terminal.end_reasoning()
+        self.assertIn("  | e\u0301\n", stream.getvalue())
+        self.assertIn("Reasoning / round 2\n  | Z\n", stream.getvalue())
+
 
 class CliIntegrationTests(unittest.TestCase):
     def setUp(self):
@@ -185,6 +256,29 @@ class CliIntegrationTests(unittest.TestCase):
         self.assertIn("A concise answer.", stdout.getvalue())
         self.assertIn("session", stderr.getvalue())
         self.assertNotIn("\x1b", stdout.getvalue() + stderr.getvalue())
+
+    def test_both_entry_points_support_streaming_and_buffered_reasoning(self):
+        for entry in (agent, chat):
+            for flags, streaming in (([], True), (["--stream"], True), (["--no-stream"], False)):
+                with self.subTest(entry=entry.__name__, flags=flags):
+                    response = reply("A final answer.")
+                    response.choices[0].message.reasoning = "Inspecting the problem."
+                    client = FakeClient([response])
+                    context = MagicMock()
+                    context.__enter__.return_value = client
+                    stdout, stderr = io.StringIO(), io.StringIO()
+                    with patch.dict(os.environ, {"OPENROUTER_API_KEY": "offline-test"}, clear=True), \
+                         patch.object(agent, "WORKSPACE", chat.WORKSPACE), \
+                         patch.object(entry, "OpenAI", return_value=context), \
+                         patch("builtins.input", side_effect=["Work", "/exit"]), \
+                         redirect_stdout(stdout), redirect_stderr(stderr):
+                        entry.main(["--plain", *flags])
+                    self.assertEqual(client.requests[0]["stream"], streaming)
+                    self.assertIn("Reasoning / round 1", stderr.getvalue())
+                    self.assertIn("Inspecting the problem.", stderr.getvalue())
+                    self.assertNotIn("Inspecting", stdout.getvalue())
+                    self.assertEqual(stdout.getvalue().count("A final answer."), 1)
+                    self.assertNotIn("\x1b", stdout.getvalue() + stderr.getvalue())
 
 
 if __name__ == "__main__":

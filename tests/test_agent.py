@@ -11,7 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from openai.types.chat import ChatCompletion
+from openai.types.chat import ChatCompletion, ChatCompletionChunk
 
 from src import agent, chat, config, storage, tools
 
@@ -33,6 +33,30 @@ def reply(content=None, calls=(), finish_reason="stop"):
     })
 
 
+def chunk(delta=None, finish_reason=None, *, choices=True):
+    return ChatCompletionChunk.model_validate({
+        "id": "offline", "created": 0, "model": "offline",
+        "object": "chat.completion.chunk",
+        "choices": [{"index": 0, "delta": delta or {}, "finish_reason": finish_reason}]
+        if choices else [],
+    })
+
+
+class FakeStream:
+    def __init__(self, chunks):
+        self.chunks = iter(chunks)
+        self.closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.closed = True
+
+    def __iter__(self):
+        return self.chunks
+
+
 class FakeClient:
     def __init__(self, responses):
         self.responses = iter(responses)
@@ -44,6 +68,12 @@ class FakeClient:
         response = next(self.responses)
         if isinstance(response, BaseException):
             raise response
+        if kwargs.get("stream") and isinstance(response, ChatCompletion):
+            choice = response.choices[0]
+            delta = choice.message.model_dump(exclude_none=True)
+            for index, call in enumerate(delta.get("tool_calls", [])):
+                call["index"] = index
+            return FakeStream([chunk(delta), chunk(finish_reason=choice.finish_reason)])
         return response
 
 
@@ -86,6 +116,226 @@ class AgentTests(unittest.TestCase):
         errors = redirect_stderr(io.StringIO())
         errors.__enter__()
         self.addCleanup(errors.__exit__, None, None, None)
+
+    def test_streamed_reasoning_arrives_before_completion_and_is_replayed(self):
+        session = storage.new_session()
+        seen = []
+
+        def fragments():
+            yield chunk({"reasoning": "Let me "})
+            self.assertEqual(seen, [(1, "Let me ")])
+            yield chunk({"reasoning": "think.", "content": "Hello"})
+            yield chunk({"content": ", Ada."})
+            yield chunk(finish_reason="stop")
+            yield chunk(choices=False)  # Usage-only chunk.
+
+        stream = FakeStream(fragments())
+        client = FakeClient([stream, reply("Follow-up.")])
+        answer = agent.run_agent(client, "Hello", session, stream=True,
+                                 on_reasoning=lambda *args: seen.append(args))
+        self.assertEqual(answer, "Hello, Ada.")
+        self.assertTrue(stream.closed)
+        self.assertEqual(seen, [(1, "Let me "), (1, "think.")])
+        loaded = storage.load_session(session.id)
+        self.assertEqual(loaded.messages[-1]["reasoning"], "Let me think.")
+        agent.run_agent(client, "Continue", loaded)
+        self.assertIn(loaded.messages[-3], client.requests[1]["messages"])
+        self.assertTrue(client.requests[0]["stream"])
+        self.assertFalse(client.requests[1]["stream"])
+
+    def test_streamed_parallel_tool_fragments_wait_for_completion(self):
+        session = storage.new_session()
+        seen = []
+
+        def fragments():
+            yield chunk({"tool_calls": [
+                {"index": 1, "id": "second", "function": {"name": "write_", "arguments": '{"path":"b.txt",'}},
+                {"index": 0, "id": "first", "function": {"name": "write_file", "arguments": '{"path":"a.txt",'}},
+            ]})
+            self.assertFalse((self.workspace / "a.txt").exists())
+            yield chunk({"tool_calls": [
+                {"index": 0, "function": {"arguments": '"content":"A"}'}},
+                {"index": 1, "function": {"name": "file", "arguments": '"content":"B"}'}},
+            ]})
+            self.assertFalse((self.workspace / "b.txt").exists())
+            yield chunk(finish_reason="tool_calls")
+
+        client = FakeClient([FakeStream(fragments()), reply("Written.")])
+        self.assertEqual(agent.run_agent(client, "Write", session, stream=True,
+            on_tool=lambda round_number, name, args, result: seen.append(json.loads(args)["path"])), "Written.")
+        self.assertEqual(seen, ["a.txt", "b.txt"])
+        self.assertEqual((self.workspace / "b.txt").read_text(), "B")
+        self.assertEqual([m["tool_call_id"] for m in client.requests[1]["messages"] if m["role"] == "tool"], ["first", "second"])
+
+    def test_reasoning_details_merge_and_duplicate_text_is_not_displayed(self):
+        session = storage.new_session()
+        seen = []
+        client = FakeClient([FakeStream([
+            chunk({"reasoning": "Thinking", "reasoning_details": [
+                {"index": 0, "type": "reasoning.text", "text": "Thinking", "signature": "sig"},
+            ]}),
+            chunk({"reasoning": ".", "reasoning_details": [
+                {"index": 0, "type": "reasoning.text", "text": ".", "signature": "nature"},
+                {"index": 1, "type": "reasoning.encrypted", "data": "opaque"},
+            ]}),
+            chunk({"content": "Done"}, "stop"),
+        ])])
+        agent.run_agent(client, "Work", session, stream=True,
+                        on_reasoning=lambda _, text: seen.append(text))
+        self.assertEqual("".join(seen), "Thinking.")
+        details = storage.load_session(session.id).messages[-1]["reasoning_details"]
+        self.assertEqual(details[0]["text"], "Thinking.")
+        self.assertEqual(details[0]["signature"], "signature")
+        self.assertEqual(details[1]["data"], "opaque")
+
+    def test_unindexed_reasoning_blocks_keep_their_ids_and_replay_separately(self):
+        session = storage.new_session()
+        seen = []
+        client = FakeClient([FakeStream([
+            chunk({"reasoning_details": [{"id": "text-1", "type": "reasoning.text", "text": "Plan."}]}),
+            chunk({"reasoning_details": [{"id": "encrypted-1", "type": "reasoning.encrypted", "data": "opaque"}]}),
+            chunk({"reasoning_details": [{"id": "text-2", "type": "reasoning.text", "text": "Check."}]}),
+            chunk({"reasoning_details": [
+                {"id": "text-2", "type": "reasoning.text", "text": " Verified."},
+                {"id": "text-1", "type": "reasoning.text", "text": " Complete.", "signature": "sig"},
+            ]}),
+            chunk({"content": "Done"}, "stop"),
+        ]), reply("Follow-up")])
+        agent.run_agent(client, "Work", session, stream=True,
+                        on_reasoning=lambda _, text: seen.append(text))
+        expected = [
+            {"id": "text-1", "type": "reasoning.text", "text": "Plan. Complete.", "signature": "sig"},
+            {"id": "encrypted-1", "type": "reasoning.encrypted", "data": "opaque"},
+            {"id": "text-2", "type": "reasoning.text", "text": "Check. Verified."},
+        ]
+        loaded = storage.load_session(session.id)
+        self.assertEqual(loaded.messages[-1]["reasoning_details"], expected)
+        self.assertNotIn("opaque", "".join(seen))
+        agent.run_agent(client, "Continue", loaded)
+        replayed = next(m for m in client.requests[1]["messages"] if "reasoning_details" in m)
+        self.assertEqual(replayed["reasoning_details"], expected)
+
+    def test_reasoning_block_identity_can_alternate_between_id_and_index(self):
+        session = storage.new_session()
+        client = FakeClient([FakeStream([
+            chunk({"reasoning_details": [{"id": "plan", "type": "reasoning.text", "text": "A"}]}),
+            chunk({"reasoning_details": [{"id": "plan", "index": 2, "type": "reasoning.text", "text": "B"}]}),
+            chunk({"reasoning_details": [{"index": 2, "text": "C"}]}),
+            chunk({"reasoning_details": [{"id": "plan", "text": "D"}]}),
+            chunk({"content": "Done"}, "stop"),
+        ])])
+        agent.run_agent(client, "Work", session, stream=True)
+        self.assertEqual(session.messages[-1]["reasoning_details"], [
+            {"id": "plan", "index": 2, "type": "reasoning.text", "text": "ABCD"},
+        ])
+
+    def test_indexed_reasoning_blocks_keep_numeric_order(self):
+        session = storage.new_session()
+        client = FakeClient([FakeStream([
+            chunk({"reasoning_details": [{"index": 2, "type": "reasoning.text", "text": "Later"}]}),
+            chunk({"reasoning_details": [{"index": 0, "type": "reasoning.text", "text": "Earlier"}]}),
+            chunk({"content": "Done"}, "stop"),
+        ])])
+        agent.run_agent(client, "Work", session, stream=True)
+        self.assertEqual([d["index"] for d in session.messages[-1]["reasoning_details"]], [0, 2])
+
+    def test_late_reasoning_aliases_unify_interleaved_fragments_in_arrival_order(self):
+        for interleave in (False, True):
+            with self.subTest(interleave=interleave):
+                session = storage.new_session()
+                fragments = [
+                    chunk({"reasoning_details": [{"id": "plan", "type": "reasoning.text", "text": "A", "signature": "s"}]}),
+                    chunk({"reasoning_details": [{"index": 2, "type": "reasoning.text", "text": "B", "signature": "i"}]}),
+                ]
+                if interleave:
+                    fragments.append(chunk({"reasoning_details": [{"id": "plan", "text": "C", "signature": "g"}]}))
+                fragments.extend([
+                    chunk({"reasoning_details": [{"id": "plan", "index": 2, "type": "reasoning.text", "text": "D"}]}),
+                    chunk({"reasoning_details": [{"index": 2, "text": "E"}]}),
+                    chunk({"reasoning_details": [{"id": "plan", "text": "F"}]}),
+                    chunk({"content": "Done"}, "stop"),
+                ])
+                client = FakeClient([FakeStream(fragments), reply("Follow-up")])
+                agent.run_agent(client, "Work", session, stream=True)
+                expected = [{"id": "plan", "index": 2, "type": "reasoning.text",
+                             "text": "ABCDEF" if interleave else "ABDEF",
+                             "signature": "sig" if interleave else "si"}]
+                loaded = storage.load_session(session.id)
+                self.assertEqual(loaded.messages[-1]["reasoning_details"], expected)
+                agent.run_agent(client, "Continue", loaded)
+                replayed = next(m for m in client.requests[1]["messages"] if "reasoning_details" in m)
+                self.assertEqual(replayed["reasoning_details"], expected)
+
+    def test_fragmented_tool_ids_survive_execution_save_and_replay(self):
+        session = storage.new_session()
+        client = FakeClient([FakeStream([
+            chunk({"tool_calls": [
+                {"index": 1, "id": "other_", "function": {"name": "memory", "arguments": '{"action":"read",'}},
+                {"index": 0, "id": "call_", "function": {"name": "memory", "arguments": '{"action":"read",'}},
+            ]}),
+            chunk({"tool_calls": [
+                {"index": 0, "id": "123", "function": {"arguments": '"target":"agent"}'}},
+                {"index": 1, "id": "456", "function": {"arguments": '"target":"user"}'}},
+            ]}),
+            chunk(finish_reason="tool_calls"),
+        ]), reply("Read both stores.")])
+        agent.run_agent(client, "Read memory", session, stream=True)
+        loaded = storage.load_session(session.id)
+        tool_message = next(m for m in loaded.messages if m.get("tool_calls"))
+        self.assertEqual([call["id"] for call in tool_message["tool_calls"]], ["call_123", "other_456"])
+        self.assertEqual([m["tool_call_id"] for m in loaded.messages if m["role"] == "tool"],
+                         ["call_123", "other_456"])
+        replayed = next(m for m in client.requests[1]["messages"] if m.get("tool_calls"))
+        self.assertEqual(replayed, tool_message)
+
+    def test_details_only_and_buffered_reasoning_are_visible_and_saved(self):
+        for streaming in (False, True):
+            with self.subTest(streaming=streaming):
+                session = storage.new_session()
+                response = reply("Done")
+                response.choices[0].message.reasoning_details = [
+                    {"type": "reasoning.summary", "summary": "A plan."},
+                    {"type": "reasoning.encrypted", "data": "hidden"},
+                ]
+                seen = []
+                agent.run_agent(FakeClient([response]), "Work", session, stream=streaming,
+                                on_reasoning=lambda _, text: seen.append(text))
+                self.assertEqual(seen, ["A plan."])
+                self.assertEqual(storage.load_session(session.id).messages[-1]["reasoning_details"],
+                                 response.choices[0].message.reasoning_details)
+
+    def test_incomplete_streams_never_execute_partial_tools_and_close_display(self):
+        for ending in ("truncated", "exception", "length", "error"):
+            with self.subTest(ending=ending):
+                session = storage.new_session()
+                closed = []
+
+                def fragments():
+                    yield chunk({"reasoning": "Working", "tool_calls": [{
+                        "index": 0, "id": "partial", "function": {"name": "write_file", "arguments": "{"},
+                    }]})
+                    if ending == "exception":
+                        raise OSError("connection lost")
+                    if ending == "length":
+                        yield chunk(finish_reason="length")
+                    if ending == "error":
+                        event = chunk(choices=False)
+                        event.error = {"message": "provider failed"}
+                        yield event
+
+                stream = FakeStream(fragments())
+                with patch.object(agent, "execute_tool") as execute:
+                    if ending == "length":
+                        self.assertIn("incomplete", agent.run_agent(FakeClient([stream]), "Work", session,
+                            stream=True, on_reasoning_end=lambda: closed.append(True)))
+                    else:
+                        with self.assertRaises((ValueError, OSError)):
+                            agent.run_agent(FakeClient([stream]), "Work", session,
+                                stream=True, on_reasoning_end=lambda: closed.append(True))
+                    execute.assert_not_called()
+                self.assertTrue(stream.closed)
+                self.assertEqual(closed, [True])
+                self.assertFalse(any(m.get("tool_calls") for m in storage.load_session(session.id).messages))
 
     def test_round_trip_preserves_tools_and_follow_up_context(self):
         session = storage.new_session()

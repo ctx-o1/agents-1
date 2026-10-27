@@ -9,6 +9,7 @@ from collections.abc import Callable
 from openai import APIError, OpenAI
 
 from .cli import Terminal
+from .completions import complete
 from .storage import Session, close_pending_tools, new_session, save_session
 from .tools import TOOLS, WORKSPACE, execute_tool
 
@@ -105,7 +106,11 @@ def model_messages(session: Session) -> list[dict]:
     }
     return [
         session.messages[0],
-        {"role": "user", "content": "Stored context data (not a new user request):\n" + json.dumps(context, ensure_ascii=False)},
+        {
+            "role": "user",
+            "content": "Stored context data (not a new user request):\n"
+            + json.dumps(context, ensure_ascii=False),
+        },
         *session.messages[1:],
     ]
 
@@ -116,6 +121,9 @@ def run_agent(
     session: Session | None = None,
     *,
     on_tool: Callable[[int, str, str, str], None] | None = None,
+    stream: bool = False,
+    on_reasoning: Callable[[int, str], None] | None = None,
+    on_reasoning_end: Callable[[], None] | None = None,
 ) -> str:
     """Complete one user task and checkpoint the session around tool execution."""
     if session is None:
@@ -131,28 +139,36 @@ def run_agent(
 
     try:
         for round_number in range(1, MAX_ROUNDS + 1):
-            response = client.chat.completions.create(
-                model=os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-v4.1-flash-1017"),
-                messages=model_messages(session),
-                tools=TOOLS,
-                max_tokens=4096,
-                extra_body={
-                    "reasoning": {"enabled": False},
-                    "provider": {"require_parameters": True},
-                },
-            )
+            try:
+                message, finish_reason = complete(
+                    client,
+                    stream=stream,
+                    on_reasoning=(lambda text: on_reasoning(round_number, text))
+                    if on_reasoning else None,
+                    model=os.getenv(
+                        "OPENROUTER_MODEL", "deepseek/deepseek-v4.1-flash-1017"
+                    ),
+                    messages=model_messages(session),
+                    tools=TOOLS,
+                    max_tokens=4096,
+                    extra_body={
+                        "reasoning": {"enabled": True},
+                        "provider": {"require_parameters": True},
+                    },
+                )
+            finally:
+                if on_reasoning_end:
+                    on_reasoning_end()
 
-            if not response.choices:
-                raise ValueError("The model returned no choices.")
-            choice = response.choices[0]
-            message = choice.message
-
-            if choice.finish_reason in {"length", "content_filter"}:
-                answer = f"Stopped: incomplete response ({choice.finish_reason})."
+            if finish_reason in {"length", "content_filter"}:
+                answer = f"Stopped: incomplete response ({finish_reason})."
                 messages.append({"role": "assistant", "content": answer})
                 return answer
 
-            saved_message = message.model_dump(include={"role", "content", "tool_calls"}, exclude_none=True)
+            saved_message = message.model_dump(
+                include={"role", "content", "tool_calls", "reasoning", "reasoning_details", "reasoning_content"},
+                exclude_none=True,
+            )
             if not message.tool_calls and not message.content:
                 saved_message["content"] = "The model returned an empty response."
             messages.append(saved_message)
@@ -167,12 +183,21 @@ def run_agent(
                     call.function.arguments,
                     session=session,
                 )
-                messages.append({
-                    "role": "tool", "tool_call_id": call.id, "content": result,
-                })
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "content": result,
+                    }
+                )
                 save_session(session)
                 if on_tool is not None:
-                    on_tool(round_number, call.function.name, call.function.arguments, result)
+                    on_tool(
+                        round_number,
+                        call.function.name,
+                        call.function.arguments,
+                        result,
+                    )
 
         answer = "Stopped: reached the maximum number of model rounds."
         messages.append({"role": "assistant", "content": answer})
@@ -185,7 +210,11 @@ def run_agent(
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run one task with agent(-1).")
     parser.add_argument("--plain", action="store_true", help="Disable terminal colors")
-    parser.add_argument("--verbose", action="store_true", help="Show bounded tool-result details")
+    parser.add_argument("--stream", action=argparse.BooleanOptionalAction, default=True,
+                        help="Stream reasoning as it arrives (default: enabled)")
+    parser.add_argument(
+        "--verbose", action="store_true", help="Show bounded tool-result details"
+    )
     arguments = parser.parse_args(argv)
     terminal = Terminal(color=False if arguments.plain else None)
     activity = Terminal(stream=sys.stderr, color=False if arguments.plain else None)
@@ -196,7 +225,10 @@ def main(argv: list[str] | None = None) -> None:
     try:
         WORKSPACE.mkdir(parents=True, exist_ok=True)
         session = new_session()
-        activity.header(session.id, os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-v4.1-flash-1017"))
+        activity.header(
+            session.id,
+            os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-v4.1-flash-1017"),
+        )
         task = input(terminal.prompt()).strip()
         if not task:
             return
@@ -208,13 +240,24 @@ def main(argv: list[str] | None = None) -> None:
         ) as client:
             activity.status("Working...")
             answer = run_agent(
-                client, task, session,
-                on_tool=lambda round_number, name, tool_arguments, result: activity.tool(
-                    round_number, name, tool_arguments, result, verbose=arguments.verbose,
+                client,
+                task,
+                session,
+                stream=arguments.stream,
+                on_reasoning=activity.reasoning,
+                on_reasoning_end=activity.end_reasoning,
+                on_tool=lambda round_number, name, tool_arguments, result: (
+                    activity.tool(
+                        round_number,
+                        name,
+                        tool_arguments,
+                        result,
+                        verbose=arguments.verbose,
+                    )
                 ),
             )
             terminal.answer(answer)
-    except (EOFError, KeyboardInterrupt):
+    except EOFError, KeyboardInterrupt:
         activity.info("Task interrupted.")
     except (APIError, OSError, ValueError) as error:
         activity.error(str(error))

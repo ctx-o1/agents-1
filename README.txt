@@ -24,6 +24,14 @@ Run from the project root (Python 3.14+ and uv):
 
 Set OPENROUTER_API_KEY in the root .env file before starting.
 For a single task, use: uv run -m src.agent
+Reasoning streams to stderr by default in a dimmed, indented block per round.
+The final answer is formatted on stdout after completion. Use --no-stream on
+either command to buffer the response (including reasoning), or --plain to
+disable colors. Models that return no reasoning simply show the final answer.
+Reasoning and reasoning_details are preserved in saved assistant messages and
+replayed on later turns. In Python, run_agent(..., stream=True,
+on_reasoning=callback) delivers (round_number, text) fragments to your callback;
+run_agent defaults to buffered mode for compatibility with existing callers.
 Run offline tests with: uv run python -m unittest discover -s tests -v
 
 Python source lives in src/. Runtime data defaults to .agent-1/ inside the

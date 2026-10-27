@@ -57,6 +57,8 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Chat with agent(-1).")
     parser.add_argument("--resume", metavar="ID", help="Resume a saved JSON session")
     parser.add_argument("--plain", action="store_true", help="Disable terminal colors")
+    parser.add_argument("--stream", action=argparse.BooleanOptionalAction, default=True,
+                        help="Stream reasoning as it arrives (default: enabled)")
     parser.add_argument("--verbose", action="store_true", help="Show bounded tool-result details")
     arguments = parser.parse_args(argv)
     terminal = Terminal(color=False if arguments.plain else None)
@@ -97,6 +99,9 @@ def main(argv: list[str] | None = None) -> None:
                     activity.status("Working...")
                     answer = run_agent(
                         client, task, session,
+                        stream=arguments.stream,
+                        on_reasoning=activity.reasoning,
+                        on_reasoning_end=activity.end_reasoning,
                         on_tool=lambda round_number, name, tool_arguments, result: activity.tool(
                             round_number, name, tool_arguments, result,
                             verbose=arguments.verbose,

@@ -1,4 +1,4 @@
-"""Small terminal views; no dependencies, cursor animation, or application state."""
+"""Small terminal views; no cursor animation or application state."""
 
 import json
 import os
@@ -6,6 +6,8 @@ import re
 import shutil
 import sys
 import textwrap
+
+from wcwidth import iter_graphemes, wcswidth
 
 ACCENT = "38;5;141"
 HEADING = "1;38;5;111"
@@ -34,6 +36,11 @@ class Terminal:
         self.interactive = bool(getattr(self.stream, "isatty", lambda: False)())
         self.color = color is not False and self.interactive and "NO_COLOR" not in os.environ and os.getenv("TERM") != "dumb"
         self.width = max(40, min(shutil.get_terminal_size(fallback=(80, 24)).columns, 120))
+        self._reasoning_round = None
+        self._reasoning_column = 0
+        self._reasoning_escape = ""
+        self._reasoning_pending = ""
+        self._reasoning_line_open = False
 
     def _style(self, text, code="2"):
         return f"\033[{code}m{text}\033[0m" if self.color else text
@@ -103,6 +110,79 @@ class Terminal:
 
     def answer(self, text):
         self.section("agent(-1)", text)
+
+    def reasoning(self, round_number, text):
+        """Flush complete graphemes with a quiet gutter and bounded display width."""
+        if self._reasoning_round != round_number:
+            self.end_reasoning()
+            self._reasoning_round = round_number
+            self._line()
+            self._line(self._style(f"Reasoning / round {round_number}", ACCENT))
+        sanitized = []
+        for character in text:
+            # Escape sequences can span network chunks. Never print their tails.
+            state = self._reasoning_escape
+            if state == "esc":
+                self._reasoning_escape = {"[": "csi", "]": "osc", "P": "osc", "^": "osc", "_": "osc"}.get(character, "")
+                continue
+            if state == "csi":
+                if "@" <= character <= "~":
+                    self._reasoning_escape = ""
+                continue
+            if state in {"osc", "osc_esc"}:
+                if character == "\x07" or state == "osc_esc" and character == "\\":
+                    self._reasoning_escape = ""
+                else:
+                    self._reasoning_escape = "osc_esc" if character == "\x1b" else "osc"
+                continue
+            if character == "\x1b":
+                self._reasoning_escape = "esc"
+                continue
+            if character != "\n" and (ord(character) < 32 or 127 <= ord(character) < 160):
+                if character != "\t":
+                    continue
+                character = " "
+            sanitized.append(character)
+        self._render_reasoning("".join(sanitized))
+
+    def _render_reasoning(self, text, *, final=False):
+        # Hold the last grapheme: a later chunk may extend it with a combining
+        # mark, variation selector, or another part of a joined emoji.
+        clusters = list(iter_graphemes(self._reasoning_pending + text))
+        self._reasoning_pending = ""
+        if clusters and not final and clusters[-1] != "\n":
+            self._reasoning_pending = clusters.pop()
+        visible = []
+        for cluster in clusters:
+            if cluster == "\n":
+                visible.append("\n")
+                self._reasoning_column = 0
+                self._reasoning_line_open = False
+                continue
+            cells = max(0, wcswidth(cluster))
+            if self._reasoning_line_open and self._reasoning_column + cells > self.width - 4:
+                visible.append("\n")
+                self._reasoning_column = 0
+                self._reasoning_line_open = False
+            if not self._reasoning_line_open:
+                visible.append("  | ")
+                self._reasoning_line_open = True
+            visible.append(cluster)
+            self._reasoning_column += cells
+        self.stream.write(self._style("".join(visible)))
+        self.stream.flush()
+
+    def end_reasoning(self):
+        if self._reasoning_round is not None:
+            self._render_reasoning("", final=True)
+            if self._reasoning_line_open:
+                self._line()
+            self._line()
+        self._reasoning_round = None
+        self._reasoning_column = 0
+        self._reasoning_escape = ""
+        self._reasoning_pending = ""
+        self._reasoning_line_open = False
 
     def section(self, title, body):
         self._line()

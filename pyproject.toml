@@ -6,6 +6,7 @@ requires-python = ">=3.14"
 dependencies = [
     "openai",
     "python-dotenv",
+    "wcwidth>=0.8.2",
 ]
 
 [tool.uv]
