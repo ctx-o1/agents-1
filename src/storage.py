@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SESSIONS_DIR = PROJECT_ROOT / "sessions"
 MEMORY_FILES = {"agent": PROJECT_ROOT / "MEMORY.md", "user": PROJECT_ROOT / "USER.md"}
 MEMORY_LIMITS = {"agent": 2200, "user": 1375}

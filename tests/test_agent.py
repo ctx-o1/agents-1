@@ -13,10 +13,7 @@ from unittest.mock import MagicMock, patch
 
 from openai.types.chat import ChatCompletion
 
-import agent
-import chat
-import storage
-import tools
+from src import agent, chat, storage, tools
 
 
 def reply(content=None, calls=(), finish_reason="stop"):
@@ -50,6 +47,19 @@ class FakeClient:
         return response
 
 
+class RuntimeLayoutTests(unittest.TestCase):
+    def test_runtime_paths_stay_at_project_root(self):
+        root = Path(__file__).resolve().parent.parent
+        self.assertEqual(agent.PROJECT_ROOT, root)
+        self.assertEqual(storage.PROJECT_ROOT, root)
+        self.assertEqual(storage.SESSIONS_DIR, root / "sessions")
+        self.assertEqual(storage.MEMORY_FILES, {
+            "agent": root / "MEMORY.md", "user": root / "USER.md",
+        })
+        self.assertEqual(tools.WORKSPACE, root / "workspace")
+        self.assertEqual(chat.WORKSPACE, root / "workspace")
+
+
 class AgentTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -58,10 +68,10 @@ class AgentTests(unittest.TestCase):
         self.workspace = self.root / "workspace"
         self.workspace.mkdir()
         for name, value in (
-            ("storage.SESSIONS_DIR", self.root / "sessions"),
-            ("storage.MEMORY_FILES", {"agent": self.root / "MEMORY.md", "user": self.root / "USER.md"}),
-            ("tools.WORKSPACE", self.workspace),
-            ("chat.WORKSPACE", self.workspace),
+            ("src.storage.SESSIONS_DIR", self.root / "sessions"),
+            ("src.storage.MEMORY_FILES", {"agent": self.root / "MEMORY.md", "user": self.root / "USER.md"}),
+            ("src.tools.WORKSPACE", self.workspace),
+            ("src.chat.WORKSPACE", self.workspace),
         ):
             patcher = patch(name, value)
             patcher.start()

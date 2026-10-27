@@ -2,9 +2,9 @@ import json
 import os
 from pathlib import Path
 
-from storage import Session, memory, scratchpad, session_search
+from .storage import PROJECT_ROOT, Session, memory, scratchpad, session_search
 
-WORKSPACE = (Path(__file__).resolve().parent / "workspace").resolve()
+WORKSPACE = PROJECT_ROOT / "workspace"
 MAX_TOOL_OUTPUT = 20_000
 MAX_SEARCH_FILE_SIZE = 1_000_000
 

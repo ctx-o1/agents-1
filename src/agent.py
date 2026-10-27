@@ -1,20 +1,18 @@
-# Run with: uv run agent.py
+# Run with: uv run -m src.agent
 
 import argparse
 import json
 import os
 import sys
 from collections.abc import Callable
-from pathlib import Path
 
 from dotenv import load_dotenv
 from openai import APIError, OpenAI
 
-from cli import Terminal
-from storage import Session, close_pending_tools, new_session, save_session
-from tools import TOOLS, WORKSPACE, execute_tool
+from .cli import Terminal
+from .storage import PROJECT_ROOT, Session, close_pending_tools, new_session, save_session
+from .tools import TOOLS, WORKSPACE, execute_tool
 
-PROJECT_ROOT = Path(__file__).resolve().parent
 MAX_ROUNDS = 10
 SYSTEM_PROMPT = """You are agent(-1), a practical assistant that completes tasks using tools.
 

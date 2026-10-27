@@ -10,10 +10,8 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import agent
-import chat
-import storage
-from cli import Terminal
+from src import agent, chat, storage
+from src.cli import Terminal
 from tests.test_agent import FakeClient, reply
 
 
@@ -111,9 +109,9 @@ class CliIntegrationTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
         for name, value in (
-            ("storage.SESSIONS_DIR", root / "sessions"),
-            ("storage.MEMORY_FILES", {"agent": root / "MEMORY.md", "user": root / "USER.md"}),
-            ("chat.WORKSPACE", root / "workspace"),
+            ("src.storage.SESSIONS_DIR", root / "sessions"),
+            ("src.storage.MEMORY_FILES", {"agent": root / "MEMORY.md", "user": root / "USER.md"}),
+            ("src.chat.WORKSPACE", root / "workspace"),
         ):
             patcher = patch(name, value)
             patcher.start()

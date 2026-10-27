@@ -34,7 +34,7 @@ return "Maximum rounds reached"
 ```
 
 Each user message allows up to 10 model rounds. Both entry points save history;
-`chat.py` keeps accepting user messages in the current session.
+`src/chat.py` keeps accepting user messages in the current session.
 
 ## Chat templates and multiple agent turns
 
@@ -99,7 +99,7 @@ Offline checks (fake model responses; network connections blocked in tests):
 These check runtime mechanics, not whether a model follows the prompt.
 
 ```powershell
-uv run --no-sync python -m unittest -v test_agent
+uv run --no-sync python -m unittest discover -s tests -v
 ```
 
 ## File tools

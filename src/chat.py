@@ -5,13 +5,13 @@ import sys
 from dotenv import load_dotenv
 from openai import APIError, OpenAI
 
-from agent import PROJECT_ROOT, run_agent
-from cli import Terminal
-from storage import (
+from .agent import PROJECT_ROOT, run_agent
+from .cli import Terminal
+from .storage import (
     Session, list_sessions, load_session, memory, new_session,
     save_session, scratchpad,
 )
-from tools import WORKSPACE
+from .tools import WORKSPACE
 
 def handle_command(command: str, session: Session, terminal: Terminal | None = None) -> Session:
     terminal = terminal or Terminal()
