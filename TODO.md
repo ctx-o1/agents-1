@@ -2,9 +2,9 @@
 
 ## Agent home directory
 
-- [ ] Choose a configurable data directory under the user's home, such as
-  `~/.agent-1/`.
-- [ ] Move sessions, `MEMORY.md`, `USER.md`, and other agent-owned runtime files
+- [x] Choose a configurable data directory (`AGENT_1_DATA_DIR`); default to
+  `./.agent-1/` for debugging, with `~/.agent-1/` available as an override.
+- [x] Store sessions, `MEMORY.md`, `USER.md`, and other agent-owned runtime files
   there. Scratchpads remain part of their session JSON.
 - [ ] Define global user preferences versus project-specific memory and sessions.
 - [ ] Move existing data without overwriting notes or losing session history.

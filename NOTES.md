@@ -80,7 +80,7 @@ encoding depend on the model's template.
 
 ## State limitations:
 
-- Use one writer per project. Atomic replacement prevents partial JSON files;
+- Use one writer per data directory. Atomic replacement prevents partial JSON files;
   it does not provide multi-process locking or transactions across stores.
 - Transcripts and notes are local plaintext and can contain private data. The
   prompt tells the agent not to save secrets in memory or scratchpads; there is
@@ -104,7 +104,9 @@ uv run --no-sync python -m unittest discover -s tests -v
 
 ## File tools
 
-All paths are relative to `workspace/`.
+All file-tool paths are relative to `workspace/` inside the configured data
+directory (`./.agent-1/workspace/` by default). `AGENT_1_DATA_DIR` selects the
+data directory at startup, after loading the project's `.env`.
 
 | Tool | Purpose |
 |---|---|

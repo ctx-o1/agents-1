@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 from openai.types.chat import ChatCompletion
 
-from src import agent, chat, storage, tools
+from src import agent, chat, config, storage, tools
 
 
 def reply(content=None, calls=(), finish_reason="stop"):
@@ -48,16 +48,17 @@ class FakeClient:
 
 
 class RuntimeLayoutTests(unittest.TestCase):
-    def test_runtime_paths_stay_at_project_root(self):
+    def test_runtime_paths_share_the_configured_data_directory(self):
         root = Path(__file__).resolve().parent.parent
-        self.assertEqual(agent.PROJECT_ROOT, root)
-        self.assertEqual(storage.PROJECT_ROOT, root)
-        self.assertEqual(storage.SESSIONS_DIR, root / "sessions")
+        self.assertEqual(config.PROJECT_ROOT, root)
+        self.assertTrue(config.DATA_DIR.is_absolute())
+        self.assertEqual(storage.SESSIONS_DIR, config.DATA_DIR / "sessions")
         self.assertEqual(storage.MEMORY_FILES, {
-            "agent": root / "MEMORY.md", "user": root / "USER.md",
+            "agent": config.DATA_DIR / "MEMORY.md", "user": config.DATA_DIR / "USER.md",
         })
-        self.assertEqual(tools.WORKSPACE, root / "workspace")
-        self.assertEqual(chat.WORKSPACE, root / "workspace")
+        self.assertEqual(tools.WORKSPACE, config.DATA_DIR / "workspace")
+        self.assertEqual(chat.WORKSPACE, tools.WORKSPACE)
+        self.assertEqual(agent.WORKSPACE, tools.WORKSPACE)
 
 
 class AgentTests(unittest.TestCase):
@@ -305,7 +306,6 @@ class AgentTests(unittest.TestCase):
         context = MagicMock()
         context.__enter__.return_value = client
         with patch.dict("os.environ", {"OPENROUTER_API_KEY": "offline-test"}, clear=True), \
-             patch.object(chat, "load_dotenv"), \
              patch.object(chat, "new_session", return_value=session), \
              patch.object(chat, "OpenAI", return_value=context), \
              patch("builtins.input", side_effect=[" ", "My name is Ada", "What is my name?", "/exit"]):

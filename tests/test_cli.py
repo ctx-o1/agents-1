@@ -161,7 +161,6 @@ class CliIntegrationTests(unittest.TestCase):
         stdout, stderr = io.StringIO(), io.StringIO()
         commands = ["/help", "/sessions", "/history", "/memory", "/notes", f"/resume {saved.id}", "/new", "/exit"]
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "offline-test"}, clear=True), \
-             patch.object(chat, "load_dotenv"), \
              patch.object(chat, "OpenAI", return_value=context), \
              patch("builtins.input", side_effect=commands), \
              redirect_stdout(stdout), redirect_stderr(stderr):
@@ -177,7 +176,6 @@ class CliIntegrationTests(unittest.TestCase):
         context.__enter__.return_value = client
         stdout, stderr = io.StringIO(), io.StringIO()
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "offline-test"}, clear=True), \
-             patch.object(agent, "load_dotenv"), \
              patch.object(agent, "WORKSPACE", chat.WORKSPACE), \
              patch.object(agent, "OpenAI", return_value=context), \
              patch("builtins.input", return_value="A simple question"), \

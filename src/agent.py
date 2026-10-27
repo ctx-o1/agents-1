@@ -6,11 +6,10 @@ import os
 import sys
 from collections.abc import Callable
 
-from dotenv import load_dotenv
 from openai import APIError, OpenAI
 
 from .cli import Terminal
-from .storage import PROJECT_ROOT, Session, close_pending_tools, new_session, save_session
+from .storage import Session, close_pending_tools, new_session, save_session
 from .tools import TOOLS, WORKSPACE, execute_tool
 
 MAX_ROUNDS = 10
@@ -190,7 +189,6 @@ def main(argv: list[str] | None = None) -> None:
     arguments = parser.parse_args(argv)
     terminal = Terminal(color=False if arguments.plain else None)
     activity = Terminal(stream=sys.stderr, color=False if arguments.plain else None)
-    load_dotenv(PROJECT_ROOT / ".env")
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
         raise SystemExit("Set OPENROUTER_API_KEY in .env or your environment.")

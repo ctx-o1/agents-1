@@ -10,9 +10,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-SESSIONS_DIR = PROJECT_ROOT / "sessions"
-MEMORY_FILES = {"agent": PROJECT_ROOT / "MEMORY.md", "user": PROJECT_ROOT / "USER.md"}
+from .config import DATA_DIR
+
+SESSIONS_DIR = DATA_DIR / "sessions"
+MEMORY_FILES = {"agent": DATA_DIR / "MEMORY.md", "user": DATA_DIR / "USER.md"}
 MEMORY_LIMITS = {"agent": 2200, "user": 1375}
 SCRATCHPAD_LIMIT = 4000
 MAX_SESSION_BYTES = 10_000_000

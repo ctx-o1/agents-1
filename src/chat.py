@@ -2,10 +2,9 @@ import argparse
 import os
 import sys
 
-from dotenv import load_dotenv
 from openai import APIError, OpenAI
 
-from .agent import PROJECT_ROOT, run_agent
+from .agent import run_agent
 from .cli import Terminal
 from .storage import (
     Session, list_sessions, load_session, memory, new_session,
@@ -62,7 +61,6 @@ def main(argv: list[str] | None = None) -> None:
     arguments = parser.parse_args(argv)
     terminal = Terminal(color=False if arguments.plain else None)
     activity = Terminal(stream=sys.stderr, color=False if arguments.plain else None)
-    load_dotenv(PROJECT_ROOT / ".env")
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
         raise SystemExit("Set OPENROUTER_API_KEY in .env or your environment.")

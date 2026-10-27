@@ -2,9 +2,10 @@ import json
 import os
 from pathlib import Path
 
-from .storage import PROJECT_ROOT, Session, memory, scratchpad, session_search
+from .config import DATA_DIR
+from .storage import Session, memory, scratchpad, session_search
 
-WORKSPACE = PROJECT_ROOT / "workspace"
+WORKSPACE = DATA_DIR / "workspace"
 MAX_TOOL_OUTPUT = 20_000
 MAX_SEARCH_FILE_SIZE = 1_000_000
 
