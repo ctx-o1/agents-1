@@ -2,7 +2,6 @@
 
 import argparse
 import json
-import os
 import sys
 from collections.abc import Callable
 
@@ -10,10 +9,10 @@ from openai import APIError, OpenAI
 
 from .cli import Terminal
 from .completions import complete
+from .config import Settings, load_settings
 from .storage import Session, close_pending_tools, new_session, save_session
 from .tools import TOOLS, WORKSPACE, execute_tool
 
-MAX_ROUNDS = 10
 SYSTEM_PROMPT = """You are agent(-1), a practical assistant that completes tasks using tools.
 
 Understand the user's objective, inspect relevant evidence, act, and check the
@@ -124,8 +123,18 @@ def run_agent(
     stream: bool = False,
     on_reasoning: Callable[[int, str], None] | None = None,
     on_reasoning_end: Callable[[], None] | None = None,
+    settings: Settings | None = None,
 ) -> str:
     """Complete one user task and checkpoint the session around tool execution."""
+    settings = settings if settings is not None else load_settings()
+    task_tokens = 0
+
+    def track_usage(usage):
+        nonlocal task_tokens
+        if usage is None or not isinstance(usage.total_tokens, int) or usage.total_tokens < 0:
+            raise ValueError("Task token budget requires provider usage; stopped before executing tools.")
+        task_tokens += usage.total_tokens
+
     if session is None:
         session = new_session()
     messages = session.messages
@@ -138,21 +147,23 @@ def run_agent(
     save_session(session)
 
     try:
-        for round_number in range(1, MAX_ROUNDS + 1):
+        for round_number in range(1, settings.max_rounds + 1):
+            output_limit = settings.max_output_tokens
+            if settings.max_task_tokens is not None:
+                output_limit = min(output_limit, settings.max_task_tokens - task_tokens)
             try:
                 message, finish_reason = complete(
                     client,
                     stream=stream,
                     on_reasoning=(lambda text: on_reasoning(round_number, text))
                     if on_reasoning else None,
-                    model=os.getenv(
-                        "OPENROUTER_MODEL", "deepseek/deepseek-v4.1-flash-1017"
-                    ),
+                    on_usage=track_usage if settings.max_task_tokens is not None else None,
+                    model=settings.model,
                     messages=model_messages(session),
                     tools=TOOLS,
-                    max_tokens=4096,
+                    max_tokens=output_limit,
                     extra_body={
-                        "reasoning": {"enabled": True},
+                        "reasoning": {"enabled": settings.reasoning_enabled},
                         "provider": {"require_parameters": True},
                     },
                 )
@@ -176,6 +187,16 @@ def run_agent(
 
             if not message.tool_calls:
                 return message.content or "The model returned an empty response."
+
+            if settings.max_task_tokens is not None and task_tokens >= settings.max_task_tokens:
+                answer = "Stopped: reached the task token budget."
+                for call in message.tool_calls:
+                    messages.append({
+                        "role": "tool", "tool_call_id": call.id,
+                        "content": json.dumps({"error": "Not executed: task token budget reached."}),
+                    })
+                messages.append({"role": "assistant", "content": answer})
+                return answer
 
             for call in message.tool_calls:
                 result = execute_tool(
@@ -210,16 +231,19 @@ def run_agent(
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Run one task with agent(-1).")
     parser.add_argument("--plain", action="store_true", help="Disable terminal colors")
-    parser.add_argument("--stream", action=argparse.BooleanOptionalAction, default=True,
-                        help="Stream reasoning as it arrives (default: enabled)")
+    parser.add_argument("--stream", action=argparse.BooleanOptionalAction, default=None,
+                        help="Override AGENT_1_STREAM (default: enabled)")
     parser.add_argument(
         "--verbose", action="store_true", help="Show bounded tool-result details"
     )
     arguments = parser.parse_args(argv)
     terminal = Terminal(color=False if arguments.plain else None)
     activity = Terminal(stream=sys.stderr, color=False if arguments.plain else None)
-    api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
+    try:
+        settings = load_settings()
+    except ValueError as error:
+        raise SystemExit(f"Configuration: {error}") from error
+    if not settings.api_key:
         raise SystemExit("Set OPENROUTER_API_KEY in .env or your environment.")
 
     try:
@@ -227,14 +251,14 @@ def main(argv: list[str] | None = None) -> None:
         session = new_session()
         activity.header(
             session.id,
-            os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-v4.1-flash-1017"),
+            settings.model,
         )
         task = input(terminal.prompt()).strip()
         if not task:
             return
         with OpenAI(
-            api_key=api_key,
-            base_url="https://openrouter.ai/api/v1",
+            api_key=settings.api_key,
+            base_url=settings.base_url,
             timeout=60.0,
             max_retries=2,
         ) as client:
@@ -243,7 +267,8 @@ def main(argv: list[str] | None = None) -> None:
                 client,
                 task,
                 session,
-                stream=arguments.stream,
+                settings=settings,
+                stream=settings.stream if arguments.stream is None else arguments.stream,
                 on_reasoning=activity.reasoning,
                 on_reasoning_end=activity.end_reasoning,
                 on_tool=lambda round_number, name, tool_arguments, result: (

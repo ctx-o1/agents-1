@@ -280,6 +280,41 @@ class CliIntegrationTests(unittest.TestCase):
                     self.assertEqual(stdout.getvalue().count("A final answer."), 1)
                     self.assertNotIn("\x1b", stdout.getvalue() + stderr.getvalue())
 
+    def test_both_entry_points_apply_settings_and_cli_stream_overrides(self):
+        for entry in (agent, chat):
+            for configured, flags, expected in (("false", [], False), ("false", ["--stream"], True),
+                                                ("true", ["--no-stream"], False)):
+                with self.subTest(entry=entry.__name__, configured=configured, flags=flags):
+                    client = FakeClient([reply("Configured answer.")])
+                    context = MagicMock()
+                    context.__enter__.return_value = client
+                    environment = {
+                        "OPENROUTER_API_KEY": "offline-test", "OPENROUTER_MODEL": "custom/model",
+                        "OPENROUTER_BASE_URL": "http://localhost:8000/v1",
+                        "AGENT_1_MAX_OUTPUT_TOKENS": "8192", "AGENT_1_REASONING_ENABLED": "false",
+                        "AGENT_1_STREAM": configured,
+                    }
+                    with patch.dict(os.environ, environment, clear=True), \
+                         patch.object(agent, "WORKSPACE", chat.WORKSPACE), \
+                         patch.object(entry, "OpenAI", return_value=context) as constructor, \
+                         patch("builtins.input", side_effect=["Work", "/exit"]), \
+                         redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                        entry.main(flags)
+                    self.assertEqual(constructor.call_args.kwargs["base_url"], "http://localhost:8000/v1")
+                    self.assertEqual(client.requests[0]["model"], "custom/model")
+                    self.assertEqual(client.requests[0]["max_tokens"], 8192)
+                    self.assertEqual(client.requests[0]["stream"], expected)
+                    self.assertFalse(client.requests[0]["extra_body"]["reasoning"]["enabled"])
+
+    def test_invalid_settings_fail_before_client_creation(self):
+        for entry in (agent, chat):
+            with self.subTest(entry=entry.__name__), \
+                 patch.dict(os.environ, {"OPENROUTER_API_KEY": "offline-test", "AGENT_1_MAX_ROUNDS": "0"}, clear=True), \
+                 patch.object(entry, "OpenAI") as constructor:
+                with self.assertRaisesRegex(SystemExit, "Configuration: AGENT_1_MAX_ROUNDS"):
+                    entry.main([])
+                constructor.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

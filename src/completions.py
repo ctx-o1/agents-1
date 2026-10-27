@@ -71,7 +71,9 @@ def reasoning_text(message):
     )
 
 
-def complete(client, *, stream=False, on_reasoning=None, **request):
+def complete(client, *, stream=False, on_reasoning=None, on_usage=None, **request):
+    if stream and on_usage:
+        request["stream_options"] = {"include_usage": True}
     response = client.chat.completions.create(stream=stream, **request)
     if not stream:
         if not response.choices:
@@ -79,16 +81,21 @@ def complete(client, *, stream=False, on_reasoning=None, **request):
         choice = response.choices[0]
         if on_reasoning and (text := reasoning_text(choice.message.model_dump())):
             on_reasoning(text)
+        if on_usage:
+            on_usage(response.usage)
         return choice.message, choice.finish_reason
 
     message = {"role": "assistant", "content": None}
     content, reasoning, calls = [], [], {}
     details = _ReasoningDetails()
     finish_reason = None
+    usage = None
     with response:
         for chunk in response:
             if error := getattr(chunk, "error", None):
                 raise ValueError(f"Model stream failed: {error}")
+            if chunk.usage is not None:
+                usage = chunk.usage
             for choice in chunk.choices:
                 if choice.index != 0:
                     continue
@@ -115,6 +122,8 @@ def complete(client, *, stream=False, on_reasoning=None, **request):
                     finish_reason = choice.finish_reason
     if finish_reason is None:
         raise ValueError("Model stream ended before completion; no tools were executed.")
+    if on_usage:
+        on_usage(usage)
     if content:
         message["content"] = "".join(content)
     if reasoning:

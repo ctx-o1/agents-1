@@ -16,7 +16,7 @@ from openai.types.chat import ChatCompletion, ChatCompletionChunk
 from src import agent, chat, config, storage, tools
 
 
-def reply(content=None, calls=(), finish_reason="stop"):
+def reply(content=None, calls=(), finish_reason="stop", usage=None):
     message = {"role": "assistant", "content": content}
     if calls:
         message["tool_calls"] = [
@@ -27,16 +27,17 @@ def reply(content=None, calls=(), finish_reason="stop"):
         ]
     return ChatCompletion.model_validate({
         "id": "offline", "created": 0, "model": "offline",
-        "object": "chat.completion", "choices": [{
+        "object": "chat.completion", "usage": usage, "choices": [{
             "index": 0, "finish_reason": finish_reason, "message": message,
         }],
     })
 
 
-def chunk(delta=None, finish_reason=None, *, choices=True):
+def chunk(delta=None, finish_reason=None, *, choices=True, usage=None):
     return ChatCompletionChunk.model_validate({
         "id": "offline", "created": 0, "model": "offline",
         "object": "chat.completion.chunk",
+        "usage": usage,
         "choices": [{"index": 0, "delta": delta or {}, "finish_reason": finish_reason}]
         if choices else [],
     })
@@ -73,7 +74,8 @@ class FakeClient:
             delta = choice.message.model_dump(exclude_none=True)
             for index, call in enumerate(delta.get("tool_calls", [])):
                 call["index"] = index
-            return FakeStream([chunk(delta), chunk(finish_reason=choice.finish_reason)])
+            return FakeStream([chunk(delta), chunk(finish_reason=choice.finish_reason),
+                               chunk(choices=False, usage=response.usage)])
         return response
 
 
@@ -98,6 +100,9 @@ class AgentTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.workspace = self.root / "workspace"
         self.workspace.mkdir()
+        environment = patch.dict("os.environ", {}, clear=True)
+        environment.start()
+        self.addCleanup(environment.stop)
         for name, value in (
             ("src.storage.SESSIONS_DIR", self.root / "sessions"),
             ("src.storage.MEMORY_FILES", {"agent": self.root / "MEMORY.md", "user": self.root / "USER.md"}),
@@ -506,11 +511,63 @@ class AgentTests(unittest.TestCase):
 
     def test_round_limit_is_per_user_message(self):
         session = storage.new_session()
-        with patch.object(agent, "MAX_ROUNDS", 2):
-            client = FakeClient([reply(calls=[(f"read_{i}", "memory", {"action": "read", "target": "agent"})]) for i in range(2)])
-            self.assertIn("maximum", agent.run_agent(client, "Work", session))
+        client = FakeClient([reply(calls=[(f"read_{i}", "memory", {"action": "read", "target": "agent"})]) for i in range(2)])
+        self.assertIn("maximum", agent.run_agent(client, "Work", session,
+                                               settings=config.Settings(max_rounds=2)))
         self.assertEqual(len(client.requests), 2)
         self.assertEqual(agent.run_agent(FakeClient([reply("Done.")]), "Continue", session), "Done.")
+
+    def test_task_budget_counts_input_and_output_across_rounds_and_resets(self):
+        for streaming in (False, True):
+            with self.subTest(streaming=streaming):
+                session = storage.new_session()
+                client = FakeClient([
+                    reply(calls=[("first", "memory", {"action": "read", "target": "agent"})],
+                          usage={"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110}),
+                    reply(calls=[("second", "memory", {"action": "read", "target": "user"})],
+                          usage={"prompt_tokens": 140, "completion_tokens": 10, "total_tokens": 150}),
+                    reply("Next task.", usage={"prompt_tokens": 30, "completion_tokens": 10, "total_tokens": 40}),
+                ])
+                settings = config.Settings(max_output_tokens=200, max_task_tokens=250)
+                with patch.object(agent, "execute_tool", wraps=tools.execute_tool) as execute:
+                    result = agent.run_agent(client, "Work", session, stream=streaming, settings=settings)
+                    self.assertEqual(result, "Stopped: reached the task token budget.")
+                    self.assertEqual(execute.call_count, 1)
+                self.assertEqual([request["max_tokens"] for request in client.requests], [200, 140])
+                if streaming:
+                    self.assertTrue(all(request["stream_options"]["include_usage"] for request in client.requests))
+                saved = storage.load_session(session.id)
+                self.assertIn("Not executed", saved.messages[-2]["content"])
+                self.assertEqual(saved.messages[-2]["tool_call_id"], "second")
+                self.assertEqual(agent.run_agent(client, "Continue", saved, stream=streaming, settings=settings),
+                                 "Next task.")
+                self.assertEqual(client.requests[2]["max_tokens"], 200)
+
+    def test_task_budget_stops_at_exact_limit_and_allows_completed_answers(self):
+        usage = {"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25}
+        for streaming in (False, True):
+            with self.subTest(streaming=streaming):
+                settings = config.Settings(max_task_tokens=25)
+                response = reply(calls=[("not_run", "memory", {"action": "read", "target": "agent"})], usage=usage)
+                client = FakeClient([response])
+                with patch.object(agent, "execute_tool") as execute:
+                    self.assertIn("task token budget", agent.run_agent(client, "Work", stream=streaming, settings=settings))
+                    execute.assert_not_called()
+                self.assertEqual(client.requests[0]["max_tokens"], 25)
+                self.assertEqual(agent.run_agent(FakeClient([reply("Complete.", usage=usage)]), "Work",
+                                                stream=streaming, settings=settings), "Complete.")
+
+    def test_task_budget_requires_usage_before_executing_tools(self):
+        for streaming in (False, True):
+            with self.subTest(streaming=streaming):
+                session = storage.new_session()
+                client = FakeClient([reply(calls=[("not_run", "memory", {"action": "read", "target": "agent"})])])
+                with patch.object(agent, "execute_tool") as execute:
+                    with self.assertRaisesRegex(ValueError, "requires provider usage"):
+                        agent.run_agent(client, "Work", session, stream=streaming,
+                                        settings=config.Settings(max_task_tokens=100))
+                    execute.assert_not_called()
+                self.assertEqual(storage.load_session(session.id).messages[-1]["content"], "Work")
 
     def test_invalid_ids_and_hidden_tool_arguments_are_rejected(self):
         session = storage.new_session()

@@ -18,9 +18,12 @@ class CompletionTransportTests(unittest.TestCase):
                     "reasoning": "Thinking aloud.",
                     "reasoning_details": [{"index": 0, "type": "reasoning.text", "text": "Thinking aloud."}],
                 }
+                usage = {"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25}
 
                 def respond(request):
                     self.assertEqual(json.loads(request.content)["stream"], streaming)
+                    if streaming:
+                        self.assertTrue(json.loads(request.content)["stream_options"]["include_usage"])
                     envelope = {"id": "test", "created": 0, "model": "test"}
                     if streaming:
                         events = [
@@ -30,22 +33,26 @@ class CompletionTransportTests(unittest.TestCase):
                             {**envelope, "object": "chat.completion.chunk", "choices": [
                                 {"index": 0, "delta": {}, "finish_reason": "stop"},
                             ]},
+                            {**envelope, "object": "chat.completion.chunk", "choices": [], "usage": usage},
                         ]
                         body = "".join("data: " + json.dumps(event) + "\n\n" for event in events)
                         return httpx.Response(200, headers={"content-type": "text/event-stream"},
                                               text=body + "data: [DONE]\n\n")
                     return httpx.Response(200, json={
-                        **envelope, "object": "chat.completion", "choices": [
+                        **envelope, "object": "chat.completion", "usage": usage, "choices": [
                             {"index": 0, "message": message, "finish_reason": "stop"},
                         ],
                     })
 
                 seen = []
+                usage_seen = []
                 with OpenAI(api_key="offline", base_url="https://offline.invalid/v1",
                             http_client=httpx.Client(transport=httpx.MockTransport(respond))) as client:
                     result, finish = complete(client, stream=streaming, model="test",
-                                              messages=[], on_reasoning=seen.append)
+                                              messages=[], on_reasoning=seen.append, on_usage=usage_seen.append)
                 self.assertEqual(finish, "stop")
                 self.assertEqual(result.content, "The answer.")
                 self.assertEqual(result.reasoning_details, message["reasoning_details"])
                 self.assertEqual(seen, ["Thinking aloud."])
+                self.assertEqual(len(usage_seen), 1)
+                self.assertEqual(usage_seen[0].total_tokens, 25)

@@ -34,6 +34,38 @@ on_reasoning=callback) delivers (round_number, text) fragments to your callback;
 run_agent defaults to buffered mode for compatibility with existing callers.
 Run offline tests with: uv run python -m unittest discover -s tests -v
 
+Runtime settings are loaded from the root .env and validated at startup by
+src/config.py. Process environment variables take precedence over .env; missing
+optional settings use code defaults. Copy .env.example for the full list:
+
+    OPENROUTER_MODEL=deepseek/deepseek-v4.1-flash-1017
+    OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+    AGENT_1_MAX_OUTPUT_TOKENS=16384
+    AGENT_1_MAX_ROUNDS=10
+    AGENT_1_STREAM=true
+    AGENT_1_REASONING_ENABLED=true
+    AGENT_1_MAX_TASK_TOKENS=
+
+Restart after changing settings. --stream and --no-stream override AGENT_1_STREAM
+for one invocation. Boolean settings accept true/false, yes/no, on/off, or 1/0.
+Blank optional numeric/boolean settings use defaults; blank MAX_TASK_TOKENS
+disables the aggregate token limit. Model and base URL must not be blank.
+
+MAX_OUTPUT_TOKENS caps generation per model call (reasoning, text, and tool-call
+output on supported providers). It does not set the model's context window.
+MAX_ROUNDS limits model calls per user task. The optional MAX_TASK_TOKENS limit
+counts reported input plus output tokens across calls in that task, including
+repeated history. It resets for the next user task. Remaining budget also caps
+the next call's output allowance. Because input usage is only known after a
+request, one response can exceed the threshold: this is a stop threshold, not a
+hard spend cap. Once reached, pending tools are marked unexecuted and no further
+model calls are made; a completed final answer is still returned. Providers must
+report usage when the limit is enabled; missing usage stops before tool execution.
+
+Python callers can pass settings=load_settings() or an explicit Settings object
+to run_agent(). Its stream argument still defaults to False for compatibility;
+pass stream=settings.stream to use the configured CLI streaming preference.
+
 Python source lives in src/. Runtime data defaults to .agent-1/ inside the
 current working directory for debugging:
 

@@ -1,4 +1,4 @@
-"""Data-location checks with isolated environments and temporary stores."""
+"""Configuration checks with isolated environments and temporary stores."""
 
 import json
 import os
@@ -52,6 +52,18 @@ class DataDirectoryTests(unittest.TestCase):
         settings = self.settings({"AGENT_1_DATA_DIR": str(target)})
         self.assertEqual(settings["DATA_DIR"], target)
 
+    def test_runtime_settings_use_project_dotenv_with_environment_precedence(self):
+        (self.project / ".env").write_text(
+            "OPENROUTER_MODEL=dotenv/model\nAGENT_1_MAX_OUTPUT_TOKENS=8192\nAGENT_1_STREAM=false\n",
+            encoding="utf-8",
+        )
+        with chdir(self.launch), patch.dict(os.environ, {"OPENROUTER_MODEL": "environment/model"}, clear=True):
+            module = runpy.run_path(str(self.config_path))
+            settings = module["load_settings"]()
+        self.assertEqual(settings.model, "environment/model")
+        self.assertEqual(settings.max_output_tokens, 8192)
+        self.assertFalse(settings.stream)
+
     def test_home_directory_override_expands_tilde(self):
         home = self.root / "home"
         settings = self.settings({
@@ -101,6 +113,58 @@ print(json.dumps({"data_dir": str(config.DATA_DIR), "session_id": session.id}))
         saved = json.loads((data / "sessions" / f"{state['session_id']}.json").read_text(encoding="utf-8"))
         self.assertEqual(saved["scratchpad"], "Verify the selected store.")
         self.assertEqual(list(self.launch.iterdir()), [data])
+
+
+class RuntimeSettingsTests(unittest.TestCase):
+    def test_defaults_and_explicit_mapping_ignore_unrelated_environment(self):
+        with patch.dict(os.environ, {"AGENT_1_MAX_OUTPUT_TOKENS": "invalid"}):
+            settings = config.load_settings({})
+        self.assertEqual(settings.max_output_tokens, 16384)
+        self.assertEqual(settings.max_rounds, 10)
+        self.assertTrue(settings.stream)
+        self.assertTrue(settings.reasoning_enabled)
+        self.assertIsNone(settings.max_task_tokens)
+        self.assertEqual(settings.api_key, "")
+
+    def test_overrides_are_parsed_without_exposing_credentials_in_repr(self):
+        settings = config.load_settings({
+            "OPENROUTER_API_KEY": "private-key", "OPENROUTER_MODEL": "custom/model",
+            "OPENROUTER_BASE_URL": "http://localhost:8000/v1",
+            "AGENT_1_MAX_OUTPUT_TOKENS": "8192", "AGENT_1_MAX_ROUNDS": "3",
+            "AGENT_1_STREAM": " FALSE ", "AGENT_1_REASONING_ENABLED": "0",
+            "AGENT_1_MAX_TASK_TOKENS": "50000",
+        })
+        self.assertEqual(settings.model, "custom/model")
+        self.assertEqual(settings.base_url, "http://localhost:8000/v1")
+        self.assertEqual(settings.max_output_tokens, 8192)
+        self.assertEqual(settings.max_rounds, 3)
+        self.assertFalse(settings.stream)
+        self.assertFalse(settings.reasoning_enabled)
+        self.assertEqual(settings.max_task_tokens, 50000)
+        self.assertNotIn("private-key", repr(settings))
+
+    def test_blank_optional_values_use_defaults(self):
+        settings = config.load_settings({
+            "AGENT_1_MAX_TASK_TOKENS": " ", "AGENT_1_MAX_OUTPUT_TOKENS": "",
+            "AGENT_1_MAX_ROUNDS": "", "AGENT_1_STREAM": "", "AGENT_1_REASONING_ENABLED": "",
+        })
+        self.assertIsNone(settings.max_task_tokens)
+        self.assertEqual(settings.max_output_tokens, 16384)
+        self.assertTrue(settings.stream)
+
+    def test_invalid_configuration_identifies_the_setting(self):
+        for name, values in (
+            ("AGENT_1_MAX_OUTPUT_TOKENS", ("0", "-1", "1.5", "many")),
+            ("AGENT_1_MAX_ROUNDS", ("0", "-3", "many")),
+            ("AGENT_1_MAX_TASK_TOKENS", ("0", "-1", "many")),
+            ("AGENT_1_STREAM", ("sometimes",)),
+            ("AGENT_1_REASONING_ENABLED", ("maybe",)),
+            ("OPENROUTER_MODEL", ("", " ")),
+            ("OPENROUTER_BASE_URL", ("", "localhost:8000/v1", "ftp://host/v1", "https://", "https://host:bad/v1")),
+        ):
+            for value in values:
+                with self.subTest(name=name, value=value), self.assertRaisesRegex(ValueError, name):
+                    config.load_settings({name: value})
 
 
 if __name__ == "__main__":
