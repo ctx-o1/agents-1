@@ -24,14 +24,36 @@ Run from the project root (Python 3.14+ and uv):
 
 Set OPENROUTER_API_KEY in the root .env file before starting.
 For a single task, use: uv run -m src.agent
-Reasoning streams to stderr by default in a dimmed, indented block per round.
-The final answer is formatted on stdout after completion. Use --no-stream on
-either command to buffer the response (including reasoning), or --plain to
-disable colors. Models that return no reasoning simply show the final answer.
+Assistant prose streams to stdout, and reasoning appears on stderr in an
+indented, secondary italic block per round. Tool activity shows running/completed
+states and elapsed time. Interactive responses use Rich Markdown, code
+highlighting, and tables in both streaming and buffered modes. A streamed draft
+updates in place; the complete response enters normal scrollback once finished.
+Use --no-stream to wait for complete responses. --plain disables colors; pipes
+and dumb terminals retain append-only plain text and preserve raw code lines.
+Interactive edit previews are labeled "Requested edit" before execution; they
+do not claim a successful change. --verbose shows bounded tool-result details.
+
+Interactive prompts use prompt_toolkit: Enter sends, F2 or Alt+Enter inserts a
+newline, and Tab completes slash commands. Multiline paste stays in one draft.
+History is kept only in memory for the current process. Non-interactive input
+uses the existing line-input fallback. Ctrl+C interrupts; no background agent
+runs or full-screen terminal application are introduced.
+
+Preview the UI without credentials or model calls:
+
+    uv run -m examples.terminal_demo --slow
+    uv run -m examples.terminal_demo --input
+
+The demo uses fabricated activity and makes no workspace changes. Use it to
+check native terminal copy/paste, color contrast, resize, and keyboard behavior.
 Reasoning and reasoning_details are preserved in saved assistant messages and
 replayed on later turns. In Python, run_agent(..., stream=True,
 on_reasoning=callback) delivers (round_number, text) fragments to your callback;
 run_agent defaults to buffered mode for compatibility with existing callers.
+on_text receives assistant prose, on_tool_start announces a validated tool before
+execution, and on_tool reports its persisted result. Input/output formatting is
+kept in the shared CLI adapter. Malformed tool IDs are rejected before execution.
 Run offline tests with: uv run python -m unittest discover -s tests -v
 
 Runtime settings are loaded from the root .env and validated at startup by

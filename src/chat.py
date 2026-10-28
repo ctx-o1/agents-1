@@ -1,11 +1,10 @@
 import argparse
-import sys
 
-from openai import APIError, OpenAI
+from openai import APIError
 
-from .agent import run_agent
 from .cli import Terminal
-from .config import load_settings
+from .cli_support import add_common_arguments, create_client, load_cli_settings, run_task, terminal_views
+from .prompt import PromptReader
 from .storage import (
     Session, list_sessions, load_session, memory, new_session,
     save_session, scratchpad,
@@ -56,19 +55,10 @@ def handle_command(command: str, session: Session, terminal: Terminal | None = N
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Chat with agent(-1).")
     parser.add_argument("--resume", metavar="ID", help="Resume a saved JSON session")
-    parser.add_argument("--plain", action="store_true", help="Disable terminal colors")
-    parser.add_argument("--stream", action=argparse.BooleanOptionalAction, default=None,
-                        help="Override AGENT_1_STREAM (default: enabled)")
-    parser.add_argument("--verbose", action="store_true", help="Show bounded tool-result details")
+    add_common_arguments(parser)
     arguments = parser.parse_args(argv)
-    terminal = Terminal(color=False if arguments.plain else None)
-    activity = Terminal(stream=sys.stderr, color=False if arguments.plain else None)
-    try:
-        settings = load_settings()
-    except ValueError as error:
-        raise SystemExit(f"Configuration: {error}") from error
-    if not settings.api_key:
-        raise SystemExit("Set OPENROUTER_API_KEY in .env or your environment.")
+    settings = load_cli_settings()
+    terminal, activity = terminal_views(arguments.plain)
 
     WORKSPACE.mkdir(parents=True, exist_ok=True)
     try:
@@ -76,46 +66,32 @@ def main(argv: list[str] | None = None) -> None:
     except (OSError, ValueError) as error:
         raise SystemExit(f"Could not open session: {error}") from error
     activity.header(session.id, settings.model)
-    terminal.help()
+    activity.info("Type /help for commands; /exit to leave.")
+    reader = PromptReader(terminal)
 
     try:
-        with OpenAI(
-            api_key=settings.api_key,
-            base_url=settings.base_url,
-            timeout=60.0,
-            max_retries=2,
-        ) as client:
+        with create_client(settings) as client:
             while True:
-                task = input(terminal.prompt()).strip()
-                if task == "/exit":
+                task = reader.read()
+                command = task.strip()
+                if command == "/exit":
                     break
-                if not task:
+                if not command:
                     continue
-                if task.startswith("/"):
+                if command.startswith("/"):
                     try:
-                        session = handle_command(task, session, terminal)
+                        session = handle_command(command, session, terminal)
                     except (OSError, ValueError) as error:
                         activity.error(f"Session: {error}")
                     continue
 
                 try:
-                    activity.status("Working...")
-                    answer = run_agent(
-                        client, task, session,
-                        settings=settings,
-                        stream=settings.stream if arguments.stream is None else arguments.stream,
-                        on_reasoning=activity.reasoning,
-                        on_reasoning_end=activity.end_reasoning,
-                        on_tool=lambda round_number, name, tool_arguments, result: activity.tool(
-                            round_number, name, tool_arguments, result,
-                            verbose=arguments.verbose,
-                        ),
-                    )
+                    run_task(client, task, session, settings=settings, terminal=terminal,
+                             activity=activity, stream=arguments.stream, verbose=arguments.verbose)
                 except (APIError, OSError, ValueError) as error:
                     activity.error(str(error))
                     continue
 
-                terminal.answer(answer)
     except (EOFError, KeyboardInterrupt):
         activity.info("Chat ended.")
     finally:

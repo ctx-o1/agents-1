@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 from wcwidth import iter_graphemes, wcswidth
 
-from src import agent, chat, storage
+from src import agent, chat, cli_support, storage
 from src.cli import Terminal
 from tests.test_agent import FakeClient, reply
 
@@ -42,7 +42,7 @@ class TerminalTests(unittest.TestCase):
                 self.assertNotIn("\x1b", stream.getvalue())
         with patch.dict(os.environ, {"TERM": "xterm-256color"}, clear=True):
             stream = FakeTTY()
-            Terminal(stream).answer("Hello")
+            Terminal(stream).answer("**Hello**")
             self.assertIn("\x1b[", stream.getvalue())
             plain = FakeTTY()
             Terminal(plain, color=False).answer("Hello")
@@ -109,14 +109,16 @@ class TerminalTests(unittest.TestCase):
         terminal = Terminal(stream, color=False)
         terminal.width = 40
         terminal.reasoning(1, "First ")
-        self.assertIn("  | First", stream.getvalue())
-        terminal.reasoning(1, "step.\n" + "x" * 80)
+        self.assertIn("  First", stream.getvalue())
+        terminal.reasoning(1, "step.\n" + "a" * 33 + " wrapped\n" + "x" * 80)
         terminal.end_reasoning()
         terminal.reasoning(2, "Next step.")
         terminal.end_reasoning()
         output = stream.getvalue()
         self.assertEqual(output.count("Reasoning / round 1"), 1)
-        self.assertIn("Reasoning / round 2\n  | Next step.\n", output)
+        self.assertIn("Reasoning / round 2\n  Next step.\n", output)
+        self.assertIn("a" * 33 + "\n  wrapped", output)
+        self.assertNotIn("  | ", output)
         self.assertTrue(all(len(line) <= 40 for line in output.splitlines()))
         self.assertNotIn("\x1b", output)
 
@@ -149,18 +151,18 @@ class TerminalTests(unittest.TestCase):
                     stream = io.StringIO()
                     terminal = Terminal(stream, color=False)
                     terminal.width = 40
-                    text = "x" * 35 + cluster * 40
+                    text = "x" * 37 + cluster * 40
                     for start in range(0, len(text), fragment_size):
                         terminal.reasoning(1, text[start:start + fragment_size])
                     terminal.end_reasoning()
-                    lines = [line for line in stream.getvalue().splitlines() if line.startswith("  | ")]
+                    lines = [line for line in stream.getvalue().splitlines() if line.startswith("  ")]
                     self.assertTrue(all(wcswidth(line) <= 40 for line in lines))
-                    self.assertEqual("".join(line[4:] for line in lines), text)
+                    self.assertEqual("".join(line[2:] for line in lines), text)
                     # Segmentation must be unchanged by chunk boundaries or wrapping.
-                    self.assertEqual([g for line in lines for g in iter_graphemes(line[4:])],
+                    self.assertEqual([g for line in lines for g in iter_graphemes(line[2:])],
                                      list(iter_graphemes(text)))
                     if wcswidth(cluster) == 2:
-                        self.assertEqual(lines[0], "  | " + "x" * 35)
+                        self.assertEqual(lines[0], "  " + "x" * 37)
 
     def test_end_reasoning_flushes_the_last_grapheme_before_the_next_round(self):
         stream = io.StringIO()
@@ -170,12 +172,13 @@ class TerminalTests(unittest.TestCase):
         terminal.end_reasoning()
         terminal.reasoning(2, "Z")
         terminal.end_reasoning()
-        self.assertIn("  | e\u0301\n", stream.getvalue())
-        self.assertIn("Reasoning / round 2\n  | Z\n", stream.getvalue())
+        self.assertIn("  e\u0301\n", stream.getvalue())
+        self.assertIn("Reasoning / round 2\n  Z\n", stream.getvalue())
 
 
 class CliIntegrationTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(patch.dict(os.environ, {}, clear=True))
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -232,7 +235,7 @@ class CliIntegrationTests(unittest.TestCase):
         stdout, stderr = io.StringIO(), io.StringIO()
         commands = ["/help", "/sessions", "/history", "/memory", "/notes", f"/resume {saved.id}", "/new", "/exit"]
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "offline-test"}, clear=True), \
-             patch.object(chat, "OpenAI", return_value=context), \
+             patch.object(cli_support, "OpenAI", return_value=context), \
              patch("builtins.input", side_effect=commands), \
              redirect_stdout(stdout), redirect_stderr(stderr):
             chat.main(["--plain"])
@@ -248,7 +251,7 @@ class CliIntegrationTests(unittest.TestCase):
         stdout, stderr = io.StringIO(), io.StringIO()
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "offline-test"}, clear=True), \
              patch.object(agent, "WORKSPACE", chat.WORKSPACE), \
-             patch.object(agent, "OpenAI", return_value=context), \
+             patch.object(cli_support, "OpenAI", return_value=context), \
              patch("builtins.input", return_value="A simple question"), \
              redirect_stdout(stdout), redirect_stderr(stderr):
             agent.main(["--plain"])
@@ -269,7 +272,7 @@ class CliIntegrationTests(unittest.TestCase):
                     stdout, stderr = io.StringIO(), io.StringIO()
                     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "offline-test"}, clear=True), \
                          patch.object(agent, "WORKSPACE", chat.WORKSPACE), \
-                         patch.object(entry, "OpenAI", return_value=context), \
+                         patch.object(cli_support, "OpenAI", return_value=context), \
                          patch("builtins.input", side_effect=["Work", "/exit"]), \
                          redirect_stdout(stdout), redirect_stderr(stderr):
                         entry.main(["--plain", *flags])
@@ -296,7 +299,7 @@ class CliIntegrationTests(unittest.TestCase):
                     }
                     with patch.dict(os.environ, environment, clear=True), \
                          patch.object(agent, "WORKSPACE", chat.WORKSPACE), \
-                         patch.object(entry, "OpenAI", return_value=context) as constructor, \
+                         patch.object(cli_support, "OpenAI", return_value=context) as constructor, \
                          patch("builtins.input", side_effect=["Work", "/exit"]), \
                          redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                         entry.main(flags)
@@ -310,10 +313,47 @@ class CliIntegrationTests(unittest.TestCase):
         for entry in (agent, chat):
             with self.subTest(entry=entry.__name__), \
                  patch.dict(os.environ, {"OPENROUTER_API_KEY": "offline-test", "AGENT_1_MAX_ROUNDS": "0"}, clear=True), \
-                 patch.object(entry, "OpenAI") as constructor:
+                 patch.object(cli_support, "OpenAI") as constructor:
                 with self.assertRaisesRegex(SystemExit, "Configuration: AGENT_1_MAX_ROUNDS"):
                     entry.main([])
                 constructor.assert_not_called()
+
+    def test_live_prose_interleaves_with_reasoning_and_is_not_printed_twice(self):
+        from tests.test_agent import FakeStream, chunk
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        client = FakeClient([FakeStream([
+            chunk({"reasoning": "Inspecting."}),
+            chunk({"content": "First "}),
+            chunk({"reasoning": "Checking."}),
+            chunk({"content": "answer."}),
+            chunk(finish_reason="stop"),
+        ])])
+        context = MagicMock()
+        context.__enter__.return_value = client
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "offline-test"}, clear=True), \
+             patch.object(agent, "WORKSPACE", chat.WORKSPACE), \
+             patch.object(cli_support, "OpenAI", return_value=context), \
+             patch("builtins.input", return_value="Work"), \
+             redirect_stdout(stdout), redirect_stderr(stderr):
+            agent.main(["--plain"])
+        self.assertEqual(stdout.getvalue().count("First"), 1)
+        self.assertEqual(stdout.getvalue().count("answer."), 1)
+        self.assertIn("Inspecting.", stderr.getvalue())
+        self.assertIn("Checking.", stderr.getvalue())
+        self.assertNotIn("\x1b", stdout.getvalue() + stderr.getvalue())
+
+    def test_chat_preserves_multiline_task_whitespace(self):
+        task = "    First line\n\n    second line  "
+        client = FakeClient([reply("Read it.")])
+        context = MagicMock()
+        context.__enter__.return_value = client
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "offline-test"}, clear=True), \
+             patch.object(cli_support, "OpenAI", return_value=context), \
+             patch("builtins.input", side_effect=[task, "/exit"]), \
+             redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            chat.main(["--plain"])
+        self.assertIn({"role": "user", "content": task}, client.requests[0]["messages"])
 
 
 if __name__ == "__main__":
