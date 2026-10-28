@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 from collections.abc import Callable
+from functools import partial
 
 from openai import APIError, OpenAI
 
@@ -120,20 +121,16 @@ def run_agent(
     session: Session | None = None,
     *,
     on_tool: Callable[[int, str, str, str], None] | None = None,
+    on_tool_start: Callable[[int, str, str], None] | None = None,
     stream: bool = False,
     on_reasoning: Callable[[int, str], None] | None = None,
     on_reasoning_end: Callable[[], None] | None = None,
+    on_text: Callable[[int, str], None] | None = None,
     settings: Settings | None = None,
 ) -> str:
     """Complete one user task and checkpoint the session around tool execution."""
     settings = settings if settings is not None else load_settings()
     task_tokens = 0
-
-    def track_usage(usage):
-        nonlocal task_tokens
-        if usage is None or not isinstance(usage.total_tokens, int) or usage.total_tokens < 0:
-            raise ValueError("Task token budget requires provider usage; stopped before executing tools.")
-        task_tokens += usage.total_tokens
 
     if session is None:
         session = new_session()
@@ -152,12 +149,12 @@ def run_agent(
             if settings.max_task_tokens is not None:
                 output_limit = min(output_limit, settings.max_task_tokens - task_tokens)
             try:
-                message, finish_reason = complete(
+                completion = complete(
                     client,
                     stream=stream,
-                    on_reasoning=(lambda text: on_reasoning(round_number, text))
-                    if on_reasoning else None,
-                    on_usage=track_usage if settings.max_task_tokens is not None else None,
+                    on_reasoning=partial(on_reasoning, round_number) if on_reasoning else None,
+                    on_text=partial(on_text, round_number) if on_text else None,
+                    include_usage=settings.max_task_tokens is not None,
                     model=settings.model,
                     messages=model_messages(session),
                     tools=TOOLS,
@@ -170,6 +167,13 @@ def run_agent(
             finally:
                 if on_reasoning_end:
                     on_reasoning_end()
+
+            message, finish_reason = completion.message, completion.finish_reason
+            if settings.max_task_tokens is not None:
+                usage = completion.usage
+                if usage is None or type(usage.total_tokens) is not int or usage.total_tokens < 0:
+                    raise ValueError("Task token budget requires provider usage; stopped before executing tools.")
+                task_tokens += usage.total_tokens
 
             if finish_reason in {"length", "content_filter"}:
                 answer = f"Stopped: incomplete response ({finish_reason})."
@@ -200,6 +204,8 @@ def run_agent(
                 return answer
 
             for call in message.tool_calls:
+                if on_tool_start:
+                    on_tool_start(round_number, call.function.name, call.function.arguments)
                 result = execute_tool(
                     call.function.name,
                     call.function.arguments,

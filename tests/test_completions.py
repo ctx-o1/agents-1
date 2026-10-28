@@ -45,14 +45,14 @@ class CompletionTransportTests(unittest.TestCase):
                     })
 
                 seen = []
-                usage_seen = []
+                prose_seen = []
                 with OpenAI(api_key="offline", base_url="https://offline.invalid/v1",
                             http_client=httpx.Client(transport=httpx.MockTransport(respond))) as client:
-                    result, finish = complete(client, stream=streaming, model="test",
-                                              messages=[], on_reasoning=seen.append, on_usage=usage_seen.append)
-                self.assertEqual(finish, "stop")
-                self.assertEqual(result.content, "The answer.")
-                self.assertEqual(result.reasoning_details, message["reasoning_details"])
+                    result = complete(client, stream=streaming, model="test", messages=[],
+                                      on_reasoning=seen.append, on_text=prose_seen.append, include_usage=True)
+                self.assertEqual(result.finish_reason, "stop")
+                self.assertEqual(result.message.content, "The answer.")
+                self.assertEqual(result.message.reasoning_details, message["reasoning_details"])
                 self.assertEqual(seen, ["Thinking aloud."])
-                self.assertEqual(len(usage_seen), 1)
-                self.assertEqual(usage_seen[0].total_tokens, 25)
+                self.assertEqual(prose_seen, ["The answer."])
+                self.assertEqual(result.usage.total_tokens, 25)

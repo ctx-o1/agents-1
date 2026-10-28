@@ -148,6 +148,22 @@ class AgentTests(unittest.TestCase):
         self.assertTrue(client.requests[0]["stream"])
         self.assertFalse(client.requests[1]["stream"])
 
+    def test_streamed_prose_arrives_before_completion_and_preserves_history(self):
+        session = storage.new_session()
+        seen = []
+
+        def fragments():
+            yield chunk({"content": "Looking "})
+            self.assertEqual(seen, [(1, "Looking ")])
+            yield chunk({"content": "at the file."})
+            yield chunk(finish_reason="stop")
+
+        answer = agent.run_agent(FakeClient([FakeStream(fragments())]), "Work", session,
+                                 stream=True, on_text=lambda *args: seen.append(args))
+        self.assertEqual(answer, "Looking at the file.")
+        self.assertEqual(session.messages[-1]["content"], answer)
+        self.assertEqual(seen, [(1, "Looking "), (1, "at the file.")])
+
     def test_invalid_tool_ids_never_execute_and_leave_session_resumable(self):
         for streaming in (False, True):
             for ids in (("same", "same"), ("", "other"), (" \t", "other")):
@@ -168,6 +184,13 @@ class AgentTests(unittest.TestCase):
     def test_streamed_parallel_tool_fragments_wait_for_completion(self):
         session = storage.new_session()
         seen = []
+        started = []
+
+        def tool_started(round_number, name, arguments):
+            path = json.loads(arguments)["path"]
+            self.assertFalse((self.workspace / path).exists())
+            self.assertTrue(any(message.get("tool_calls") for message in session.messages))
+            started.append(path)
 
         def fragments():
             yield chunk({"tool_calls": [
@@ -184,7 +207,9 @@ class AgentTests(unittest.TestCase):
 
         client = FakeClient([FakeStream(fragments()), reply("Written.")])
         self.assertEqual(agent.run_agent(client, "Write", session, stream=True,
+            on_tool_start=tool_started,
             on_tool=lambda round_number, name, args, result: seen.append(json.loads(args)["path"])), "Written.")
+        self.assertEqual(started, ["a.txt", "b.txt"])
         self.assertEqual(seen, ["a.txt", "b.txt"])
         self.assertEqual((self.workspace / "b.txt").read_text(), "B")
         self.assertEqual([m["tool_call_id"] for m in client.requests[1]["messages"] if m["role"] == "tool"], ["first", "second"])

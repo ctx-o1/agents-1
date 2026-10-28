@@ -1,14 +1,31 @@
 """Normalize buffered and streamed OpenRouter chat completions."""
 
+from dataclasses import dataclass
+from typing import Any
+
+from openai.types import CompletionUsage
 from openai.types.chat import ChatCompletionMessage
+
+type ReasoningFragment = tuple[int, dict[str, Any]]
+type ReasoningBlock = list[ReasoningFragment]
+
+
+@dataclass(frozen=True)
+class Completion:
+    message: ChatCompletionMessage
+    finish_reason: str
+    usage: CompletionUsage | None
 
 
 class _ReasoningDetails:
-    """Track blocks by stable identity, independently of chunk array positions."""
+    """Aliases share blocks; merged fragments retain global arrival order.
+
+    Anonymous fragments have only best-effort identity by type and position.
+    """
 
     def __init__(self):
-        self.blocks = []
-        self.aliases = {}
+        self.blocks: list[ReasoningBlock] = []
+        self.aliases: dict[tuple, ReasoningBlock] = {}
         self.sequence = 0
 
     def add(self, detail, position):
@@ -71,8 +88,8 @@ def reasoning_text(message):
     )
 
 
-def complete(client, *, stream=False, on_reasoning=None, on_usage=None, **request):
-    if stream and on_usage:
+def complete(client, *, stream=False, on_reasoning=None, on_text=None, include_usage=False, **request) -> Completion:
+    if stream and include_usage:
         request["stream_options"] = {"include_usage": True}
     response = client.chat.completions.create(stream=stream, **request)
     if not stream:
@@ -81,9 +98,9 @@ def complete(client, *, stream=False, on_reasoning=None, on_usage=None, **reques
         choice = response.choices[0]
         if on_reasoning and (text := reasoning_text(choice.message.model_dump())):
             on_reasoning(text)
-        if on_usage:
-            on_usage(response.usage)
-        return choice.message, choice.finish_reason
+        if on_text and choice.message.content:
+            on_text(choice.message.content)
+        return Completion(choice.message, choice.finish_reason, response.usage)
 
     message = {"role": "assistant", "content": None}
     content, reasoning, calls = [], [], {}
@@ -104,6 +121,8 @@ def complete(client, *, stream=False, on_reasoning=None, on_usage=None, **reques
                     on_reasoning(text)
                 if delta.get("content"):
                     content.append(delta["content"])
+                    if on_text:
+                        on_text(delta["content"])
                 if text := delta.get("reasoning") or delta.get("reasoning_content"):
                     reasoning.append(text)
                 for position, detail in enumerate(delta.get("reasoning_details", []) or []):
@@ -122,8 +141,6 @@ def complete(client, *, stream=False, on_reasoning=None, on_usage=None, **reques
                     finish_reason = choice.finish_reason
     if finish_reason is None:
         raise ValueError("Model stream ended before completion; no tools were executed.")
-    if on_usage:
-        on_usage(usage)
     if content:
         message["content"] = "".join(content)
     if reasoning:
@@ -132,4 +149,4 @@ def complete(client, *, stream=False, on_reasoning=None, on_usage=None, **reques
         message["reasoning_details"] = details.ordered()
     if calls:
         message["tool_calls"] = [calls[key] for key in sorted(calls)]
-    return ChatCompletionMessage.model_validate(message), finish_reason
+    return Completion(ChatCompletionMessage.model_validate(message), finish_reason, usage)
