@@ -10,7 +10,7 @@ from openai import APIError, OpenAI
 from .cli import Terminal
 from .completions import complete
 from .config import Settings, load_settings
-from .storage import Session, close_pending_tools, new_session, save_session
+from .storage import Session, close_pending_tools, new_session, save_session, validate_tool_ids
 from .tools import TOOLS, WORKSPACE, execute_tool
 
 SYSTEM_PROMPT = """You are agent(-1), a practical assistant that completes tasks using tools.
@@ -182,6 +182,7 @@ def run_agent(
             )
             if not message.tool_calls and not message.content:
                 saved_message["content"] = "The model returned an empty response."
+            validate_tool_ids(saved_message.get("tool_calls", []))
             messages.append(saved_message)
             save_session(session)
 

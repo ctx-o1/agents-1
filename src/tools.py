@@ -20,10 +20,10 @@ def workspace_path(path: str) -> Path:
 def list_files(path: str = ".") -> str:
     directory = workspace_path(path)
     entries = sorted(directory.iterdir(), key=lambda entry: entry.name)
-    return "\n".join(
+    return _format_results((
         f"{entry.name}{'/' if entry.is_dir() else ''}"
-        for entry in entries[:200]
-    ) or "(empty directory)"
+        for entry in entries
+    ), empty="(empty directory)")
 
 
 def read_file(path: str) -> str:
@@ -75,7 +75,7 @@ def _workspace_files(path: str):
                 yield candidate
 
 
-def _format_results(results) -> str:
+def _format_results(results, *, empty: str = "(no matches)") -> str:
     lines = []
     size = 0
     for line in results:
@@ -83,7 +83,7 @@ def _format_results(results) -> str:
             return "\n".join(lines) + "\n[Results truncated; narrow your search]"
         lines.append(line)
         size += len(line) + 1
-    return "\n".join(lines) or "(no matches)"
+    return "\n".join(lines) or empty
 
 
 def search_files(pattern: str, path: str = ".") -> str:
@@ -137,7 +137,10 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "list_files",
-            "description": "List entries in a workspace directory.",
+            "description": (
+                "List entries in a workspace directory. Returns at most 200 entries "
+                "and 20,000 listing characters, plus a truncation notice when incomplete."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {"path": {"type": "string"}},

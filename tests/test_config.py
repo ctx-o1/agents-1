@@ -116,6 +116,22 @@ print(json.dumps({"data_dir": str(config.DATA_DIR), "session_id": session.id}))
 
 
 class RuntimeSettingsTests(unittest.TestCase):
+    def test_explicit_settings_validate_types_and_invariants(self):
+        invalid = (
+            ("api_key", "OPENROUTER_API_KEY", (None, 123)),
+            ("model", "OPENROUTER_MODEL", (None, 123, "", " \t")),
+            ("base_url", "OPENROUTER_BASE_URL", (None, 123, "", "localhost:8000", "https://", "https://host:bad/v1")),
+            ("max_output_tokens", "AGENT_1_MAX_OUTPUT_TOKENS", (None, True, 0, -1, 1.5, "100")),
+            ("max_rounds", "AGENT_1_MAX_ROUNDS", (None, False, 0, -1, 1.5, "2")),
+            ("max_task_tokens", "AGENT_1_MAX_TASK_TOKENS", (True, 0, -1, 1.5, "100")),
+            ("stream", "AGENT_1_STREAM", (None, 0, 1, "true")),
+            ("reasoning_enabled", "AGENT_1_REASONING_ENABLED", (None, 0, 1, "false")),
+        )
+        for field, name, values in invalid:
+            for value in values:
+                with self.subTest(field=field, value=value), self.assertRaisesRegex(ValueError, name):
+                    config.Settings(**{field: value})
+
     def test_defaults_and_explicit_mapping_ignore_unrelated_environment(self):
         with patch.dict(os.environ, {"AGENT_1_MAX_OUTPUT_TOKENS": "invalid"}):
             settings = config.load_settings({})

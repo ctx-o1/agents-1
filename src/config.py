@@ -27,18 +27,45 @@ class Settings:
     reasoning_enabled: bool = True
     max_task_tokens: int | None = None
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.api_key, str):
+            raise ValueError("OPENROUTER_API_KEY must be a string.")
+        if not isinstance(self.model, str) or not self.model.strip():
+            raise ValueError("OPENROUTER_MODEL must not be empty.")
+        try:
+            parsed = urlsplit(self.base_url) if isinstance(self.base_url, str) else None
+            valid_url = parsed is not None and parsed.scheme in {"http", "https"} and bool(parsed.hostname)
+            if parsed is not None:
+                parsed.port  # Validate an explicitly supplied port as well.
+        except ValueError:
+            valid_url = False
+        if not valid_url:
+            raise ValueError("OPENROUTER_BASE_URL must be an absolute HTTP or HTTPS URL.")
+        for value, name in (
+            (self.max_output_tokens, "AGENT_1_MAX_OUTPUT_TOKENS"),
+            (self.max_rounds, "AGENT_1_MAX_ROUNDS"),
+            (self.max_task_tokens, "AGENT_1_MAX_TASK_TOKENS"),
+        ):
+            if value is None and name == "AGENT_1_MAX_TASK_TOKENS":
+                continue
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"{name} must be a positive integer.")
+        for value, name in (
+            (self.stream, "AGENT_1_STREAM"),
+            (self.reasoning_enabled, "AGENT_1_REASONING_ENABLED"),
+        ):
+            if type(value) is not bool:
+                raise ValueError(f"{name} must be true or false.")
 
-def _positive_integer(environment, name, default):
+
+def _integer(environment, name, default):
     raw = environment.get(name, "").strip()
     if not raw:
         return default
     try:
-        value = int(raw)
+        return int(raw)
     except ValueError:
         raise ValueError(f"{name} must be a positive integer.") from None
-    if value <= 0:
-        raise ValueError(f"{name} must be a positive integer.")
-    return value
 
 
 def _boolean(environment, name, default):
@@ -56,25 +83,13 @@ def load_settings(environment: Mapping[str, str] | None = None) -> Settings:
     """Read once at CLI startup, or inject an isolated mapping in offline tests."""
     environment = os.environ if environment is None else environment
     defaults = Settings()
-    model = environment.get("OPENROUTER_MODEL", defaults.model).strip()
-    if not model:
-        raise ValueError("OPENROUTER_MODEL must not be empty.")
-    base_url = environment.get("OPENROUTER_BASE_URL", defaults.base_url).strip()
-    try:
-        parsed = urlsplit(base_url)
-        valid_url = parsed.scheme in {"http", "https"} and bool(parsed.hostname)
-        parsed.port  # Validate an explicitly supplied port as well.
-    except ValueError:
-        valid_url = False
-    if not valid_url:
-        raise ValueError("OPENROUTER_BASE_URL must be an absolute HTTP or HTTPS URL.")
     return Settings(
         api_key=environment.get("OPENROUTER_API_KEY", "").strip(),
-        model=model,
-        base_url=base_url,
-        max_output_tokens=_positive_integer(environment, "AGENT_1_MAX_OUTPUT_TOKENS", defaults.max_output_tokens),
-        max_rounds=_positive_integer(environment, "AGENT_1_MAX_ROUNDS", defaults.max_rounds),
+        model=environment.get("OPENROUTER_MODEL", defaults.model).strip(),
+        base_url=environment.get("OPENROUTER_BASE_URL", defaults.base_url).strip(),
+        max_output_tokens=_integer(environment, "AGENT_1_MAX_OUTPUT_TOKENS", defaults.max_output_tokens),
+        max_rounds=_integer(environment, "AGENT_1_MAX_ROUNDS", defaults.max_rounds),
         stream=_boolean(environment, "AGENT_1_STREAM", defaults.stream),
         reasoning_enabled=_boolean(environment, "AGENT_1_REASONING_ENABLED", defaults.reasoning_enabled),
-        max_task_tokens=_positive_integer(environment, "AGENT_1_MAX_TASK_TOKENS", None),
+        max_task_tokens=_integer(environment, "AGENT_1_MAX_TASK_TOKENS", None),
     )

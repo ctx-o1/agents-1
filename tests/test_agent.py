@@ -148,6 +148,23 @@ class AgentTests(unittest.TestCase):
         self.assertTrue(client.requests[0]["stream"])
         self.assertFalse(client.requests[1]["stream"])
 
+    def test_invalid_tool_ids_never_execute_and_leave_session_resumable(self):
+        for streaming in (False, True):
+            for ids in (("same", "same"), ("", "other"), (" \t", "other")):
+                with self.subTest(streaming=streaming, ids=ids):
+                    session = storage.new_session()
+                    calls = [(call_id, "write_file", {"path": f"{i}.txt", "content": "Not written"})
+                             for i, call_id in enumerate(ids)]
+                    client = FakeClient([reply(calls=calls), reply("Recovered.")])
+                    with patch.object(agent, "execute_tool") as execute:
+                        with self.assertRaisesRegex(ValueError, "[Tt]ool-call IDs"):
+                            agent.run_agent(client, "Write", session, stream=streaming)
+                        execute.assert_not_called()
+                    loaded = storage.load_session(session.id)
+                    self.assertFalse(any(message.get("tool_calls") for message in loaded.messages))
+                    self.assertEqual(loaded.messages[-1]["content"], "Write")
+                    self.assertEqual(agent.run_agent(client, "Recover", loaded, stream=streaming), "Recovered.")
+
     def test_streamed_parallel_tool_fragments_wait_for_completion(self):
         session = storage.new_session()
         seen = []

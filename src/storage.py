@@ -160,6 +160,18 @@ def save_session(session: Session) -> None:
     _atomic_text(_session_path(session.id), serialized)
 
 
+def validate_tool_ids(calls: list[dict]) -> None:
+    """Validate one assistant's API-shaped tool-call batch before side effects."""
+    seen = set()
+    for call in calls:
+        call_id = call.get("id") if isinstance(call, dict) else None
+        if not isinstance(call_id, str) or not call_id.strip():
+            raise ValueError("Tool-call IDs must be non-empty strings.")
+        if call_id in seen:
+            raise ValueError("Duplicate tool-call IDs are not allowed.")
+        seen.add(call_id)
+
+
 def close_pending_tools(messages: list[dict]) -> None:
     """Mark incomplete calls as uncertain, so resuming never replays side effects."""
     repaired = []
@@ -183,9 +195,9 @@ def close_pending_tools(messages: list[dict]) -> None:
             raise ValueError("Session contains an unmatched tool result.")
         repaired.append(message)
         if message["role"] == "assistant":
-            for call in message.get("tool_calls", []):
-                if call["id"] in pending:
-                    raise ValueError("Session contains duplicate tool-call IDs.")
+            calls = message.get("tool_calls", [])
+            validate_tool_ids(calls)
+            for call in calls:
                 pending[call["id"]] = call
         elif message["role"] == "tool":
             pending.pop(message["tool_call_id"])
@@ -216,7 +228,6 @@ def _read_session(session_id: str) -> Session:
             raise ValueError("Only assistant messages may request tools.")
         if not isinstance(calls, list) or any(
             not isinstance(call, dict)
-            or not isinstance(call.get("id"), str)
             or call.get("type") != "function"
             or not isinstance(call.get("function"), dict)
             or not isinstance(call["function"].get("name"), str)
