@@ -11,8 +11,7 @@ from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from wcwidth import wcswidth
 
-from src.cli import Terminal, clean
-from src.prompt import PromptReader
+from src.cli import PromptReader, Terminal, clean
 
 
 class TTY(io.StringIO):
@@ -88,7 +87,7 @@ class TerminalUITests(unittest.TestCase):
         for environment in ({"TERM": "dumb"}, {}):
             with self.subTest(environment=environment), patch.dict(os.environ, environment, clear=True), \
                  patch("sys.stdin", io.StringIO()), patch("builtins.input", return_value="work\nmore") as read, \
-                 patch("src.prompt.PromptSession") as session:
+                 patch("src.cli.PromptSession") as session:
                 terminal = Terminal(TTY(), color=False)
                 with patch.object(terminal.console, "clear") as clear_screen:
                     terminal.clear()

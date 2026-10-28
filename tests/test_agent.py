@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 
-from src import agent, chat, cli_support, config, storage, tools
+from src import agent, chat, cli, config, storage, tools
 
 
 def reply(content=None, calls=(), finish_reason="stop", usage=None):
@@ -656,7 +656,7 @@ class AgentTests(unittest.TestCase):
         context.__enter__.return_value = client
         with patch.dict("os.environ", {"OPENROUTER_API_KEY": "offline-test"}, clear=True), \
              patch.object(chat, "new_session", return_value=session), \
-             patch.object(cli_support, "OpenAI", return_value=context), \
+             patch.object(cli, "OpenAI", return_value=context), \
              patch("builtins.input", side_effect=[" ", "My name is Ada", "What is my name?", "/exit"]):
             chat.main([])
         self.assertEqual(len(client.requests), 2)

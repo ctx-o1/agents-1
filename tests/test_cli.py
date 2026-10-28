@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 from wcwidth import iter_graphemes, wcswidth
 
-from src import agent, chat, cli_support, storage
+from src import agent, chat, cli, storage
 from src.cli import Terminal
 from tests.test_agent import FakeClient, reply
 
@@ -235,7 +235,7 @@ class CliIntegrationTests(unittest.TestCase):
         stdout, stderr = io.StringIO(), io.StringIO()
         commands = ["/help", "/sessions", "/history", "/memory", "/notes", f"/resume {saved.id}", "/new", "/exit"]
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "offline-test"}, clear=True), \
-             patch.object(cli_support, "OpenAI", return_value=context), \
+             patch.object(cli, "OpenAI", return_value=context), \
              patch("builtins.input", side_effect=commands), \
              redirect_stdout(stdout), redirect_stderr(stderr):
             chat.main(["--plain"])
@@ -251,7 +251,7 @@ class CliIntegrationTests(unittest.TestCase):
         stdout, stderr = io.StringIO(), io.StringIO()
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "offline-test"}, clear=True), \
              patch.object(agent, "WORKSPACE", chat.WORKSPACE), \
-             patch.object(cli_support, "OpenAI", return_value=context), \
+             patch.object(cli, "OpenAI", return_value=context), \
              patch("builtins.input", return_value="A simple question"), \
              redirect_stdout(stdout), redirect_stderr(stderr):
             agent.main(["--plain"])
@@ -272,7 +272,7 @@ class CliIntegrationTests(unittest.TestCase):
                     stdout, stderr = io.StringIO(), io.StringIO()
                     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "offline-test"}, clear=True), \
                          patch.object(agent, "WORKSPACE", chat.WORKSPACE), \
-                         patch.object(cli_support, "OpenAI", return_value=context), \
+                         patch.object(cli, "OpenAI", return_value=context), \
                          patch("builtins.input", side_effect=["Work", "/exit"]), \
                          redirect_stdout(stdout), redirect_stderr(stderr):
                         entry.main(["--plain", *flags])
@@ -299,7 +299,7 @@ class CliIntegrationTests(unittest.TestCase):
                     }
                     with patch.dict(os.environ, environment, clear=True), \
                          patch.object(agent, "WORKSPACE", chat.WORKSPACE), \
-                         patch.object(cli_support, "OpenAI", return_value=context) as constructor, \
+                         patch.object(cli, "OpenAI", return_value=context) as constructor, \
                          patch("builtins.input", side_effect=["Work", "/exit"]), \
                          redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                         entry.main(flags)
@@ -313,7 +313,7 @@ class CliIntegrationTests(unittest.TestCase):
         for entry in (agent, chat):
             with self.subTest(entry=entry.__name__), \
                  patch.dict(os.environ, {"OPENROUTER_API_KEY": "offline-test", "AGENT_1_MAX_ROUNDS": "0"}, clear=True), \
-                 patch.object(cli_support, "OpenAI") as constructor:
+                 patch.object(cli, "OpenAI") as constructor:
                 with self.assertRaisesRegex(SystemExit, "Configuration: AGENT_1_MAX_ROUNDS"):
                     entry.main([])
                 constructor.assert_not_called()
@@ -333,7 +333,7 @@ class CliIntegrationTests(unittest.TestCase):
         context.__enter__.return_value = client
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "offline-test"}, clear=True), \
              patch.object(agent, "WORKSPACE", chat.WORKSPACE), \
-             patch.object(cli_support, "OpenAI", return_value=context), \
+             patch.object(cli, "OpenAI", return_value=context), \
              patch("builtins.input", return_value="Work"), \
              redirect_stdout(stdout), redirect_stderr(stderr):
             agent.main(["--plain"])
@@ -349,7 +349,7 @@ class CliIntegrationTests(unittest.TestCase):
         context = MagicMock()
         context.__enter__.return_value = client
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "offline-test"}, clear=True), \
-             patch.object(cli_support, "OpenAI", return_value=context), \
+             patch.object(cli, "OpenAI", return_value=context), \
              patch("builtins.input", side_effect=[task, "/exit"]), \
              redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
             chat.main(["--plain"])

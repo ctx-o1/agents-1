@@ -21,11 +21,9 @@ tools, budgets, and saved sessions.
 
 ## Code ownership
 
-- [src/prompt.py](src/prompt.py): `PromptReader`, one reusable input session.
-- [src/cli.py](src/cli.py): `Terminal`, Rich rendering, thinking styles, tool
-  summaries, stream sanitization, and plain-output fallback.
-- [src/cli_support.py](src/cli_support.py): shared flags/client setup and
-  `run_task()`. Coordinates thinking, response, and tool output without duplicates.
+- [src/cli.py](src/cli.py): `Terminal` rendering, `PromptReader` input editing,
+  shared flags/client setup, and `run_task()` presentation. Coordinates
+  thinking, response, and tool output without duplicates.
 - [src/chat.py](src/chat.py): chat and slash-command handling.
 - [src/agent.py](src/agent.py): agent loop and single-task entry point.
 - [src/completions.py](src/completions.py): provider stream assembly; returns

@@ -234,8 +234,9 @@ def run_agent(
 
 
 def main(argv: list[str] | None = None) -> None:
-    from .cli_support import add_common_arguments, create_client, load_cli_settings, run_task, terminal_views
-    from .prompt import PromptReader
+    from .cli import (
+        PromptReader, add_common_arguments, create_client, load_cli_settings, run_task, terminal_views,
+    )
 
     parser = argparse.ArgumentParser(description="Run one task with agent(-1).")
     add_common_arguments(parser)

@@ -8,8 +8,7 @@ import time
 from rich.padding import Padding
 from rich.text import Text
 
-from src.cli import Terminal, clean
-from src.prompt import PromptReader
+from src.cli import PromptReader, Terminal, clean
 
 
 def main():

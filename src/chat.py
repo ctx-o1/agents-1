@@ -2,9 +2,10 @@ import argparse
 
 from openai import APIError
 
-from .cli import Terminal
-from .cli_support import add_common_arguments, create_client, load_cli_settings, run_task, terminal_views
-from .prompt import PromptReader
+from .cli import (
+    PromptReader, Terminal, add_common_arguments, create_client,
+    load_cli_settings, run_task, terminal_views,
+)
 from .storage import (
     Session, list_sessions, load_session, memory, new_session,
     save_session, scratchpad,
